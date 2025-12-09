@@ -1,5 +1,9 @@
 # SamGeo QGIS Plugin
 
+[![DOI](https://joss.theoj.org/papers/10.21105/joss.05663/status.svg)](https://doi.org/10.21105/joss.05663)
+[![QGIS](https://img.shields.io/badge/QGIS-plugin-orange.svg)](https://github.com/opengeos/qgis-samgeo-plugin)
+[![QGIS](https://img.shields.io/badge/SamGeo-repository-blue.svg)](https://github.com/opengeos/segment-geospatial)
+
 A QGIS plugin for remote sensing image segmentation using [SamGeo](https://samgeo.gishub.org), powered by Meta's Segment Anything Model ([SAM](https://github.com/facebookresearch/sam3)).
 
 ## Features
