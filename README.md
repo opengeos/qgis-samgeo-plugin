@@ -15,7 +15,11 @@ A QGIS plugin for remote sensing image segmentation using [SamGeo](https://samge
 - **GeoTIFF support**: Works with georeferenced images, preserving spatial reference
 - **Multiple output formats**: Save as vector (GeoPackage, Shapefile) or raster (GeoTIFF)
 
-![](https://github.com/user-attachments/assets/21805e83-15a7-4619-92f4-391b90315eff)
+## Demos
+
+Check out this [short video demo](https://youtu.be/DKKrQKeU3Ik) and [full video tutorial](https://youtu.be/oPZc7BvDsHE) on how to use the plugin.
+
+[![](https://github.com/user-attachments/assets/0a9dbc4a-98fa-4a14-8238-be5b871926fa)](https://youtu.be/oPZc7BvDsHE)
 
 ## Requirements
 
