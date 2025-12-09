@@ -99,7 +99,7 @@ Provide your access token when prompted.
 
 To use SamGeo3 (SAM 3), you need to request access to the model. Go to the [SAM 3 model page](https://huggingface.co/facebook/sam3) and log in with your Hugging Face account. Fill out the access request form and click on the "Submit" button to send your request. The approval process might take a few hours. Once approved, you can use SamGeo3 in the plugin.
 
-If your request is denied, you can try to download the model from [ModelScope](https://www.modelscope.cn/models/facebook/sam3/files), whch does not require access permission. After downloading, place the model files in the following directory:
+If your request is denied, you can try to download the model from [ModelScope](https://www.modelscope.cn/models/facebook/sam3/files), which does not require access permission. After downloading, place the model files in the following directory:
 
 - Linux/macOS: `~/.cache/huggingface/hub/models--facebook--sam3`
 - Windows: `%USERPROFILE%\.cache\huggingface\hub\models--facebook--sam3`
