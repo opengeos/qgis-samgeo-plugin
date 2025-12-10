@@ -33,7 +33,7 @@ Check out this [short video demo](https://youtu.be/DKKrQKeU3Ik) and [full video 
 
 ### 1. Install SamGeo
 
-First, install SamGeo in your QGIS Python environment. It is recommended to create a new conda environment **and** install QGIS and SamGeo:
+First, install SamGeo in your QGIS Python environment. It is recommended to create a new conda environment **and** install QGIS and SamGeo. Install [Miniconda ](https://www.anaconda.com/docs/getting-started/miniconda/install), then run the following commands to install SamGeo on macOS/Linux:
 
 ```bash
 conda create -n geo python=3.12
@@ -45,6 +45,16 @@ Some SamGeo dependencies are only available on PyPI. Run the following command t
 
 ```bash
 pip install -U "segment-geospatial[samgeo3]"
+```
+
+It is a bit tricky to install SAM 3 on Windows. Run the following commands on Windows to install SamGeo:
+
+```bash
+conda create -n geo python=3.12
+conda activate geo
+conda install pytorch torchvision pytorch-cuda=12.1 -c pytorch -c nvidia
+pip install "segment-geospatial[samgeo3]" triton-windows
+conda install -c conda-forge qgis
 ```
 
 ### 2. Install the Plugin
