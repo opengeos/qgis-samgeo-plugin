@@ -691,7 +691,13 @@ class SamGeoPlugin:
 
             # Import and initialize the appropriate model
             if "SamGeo3" in model_version:
-                from samgeo import SamGeo3
+                try:
+                    from ._samgeo_lib import get_samgeo
+                except ImportError:
+                    from _samgeo_lib import get_samgeo
+
+                samgeo = get_samgeo()
+                SamGeo3 = samgeo.SamGeo3
 
                 self.sam = SamGeo3(
                     backend=backend,
@@ -701,14 +707,26 @@ class SamGeoPlugin:
                 )
                 model_name = "SamGeo3"
             elif "SamGeo2" in model_version:
-                from samgeo import SamGeo2
+                try:
+                    from ._samgeo_lib import get_samgeo
+                except ImportError:
+                    from _samgeo_lib import get_samgeo
+
+                samgeo = get_samgeo()
+                SamGeo2 = samgeo.SamGeo2
 
                 self.sam = SamGeo2(
                     device=device,
                 )
                 model_name = "SamGeo2"
             else:
-                from samgeo import SamGeo
+                try:
+                    from ._samgeo_lib import get_samgeo
+                except ImportError:
+                    from _samgeo_lib import get_samgeo
+
+                samgeo = get_samgeo()
+                SamGeo = samgeo.SamGeo
 
                 self.sam = SamGeo(
                     device=device,
@@ -1339,7 +1357,12 @@ class SamGeoPlugin:
                     self.sam.save_masks(output=temp_raster, unique=unique)
 
                     # Convert raster to vector
-                    from samgeo import common
+                    try:
+                        from ._samgeo_lib import get_samgeo
+                    except ImportError:
+                        from _samgeo_lib import get_samgeo
+
+                    common = get_samgeo().common
 
                     common.raster_to_vector(temp_raster, output_path)
 

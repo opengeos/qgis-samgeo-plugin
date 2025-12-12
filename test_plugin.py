@@ -28,7 +28,19 @@ def test_samgeo_import():
     """Test that SamGeo can be imported."""
     print("[Test] SamGeo import...")
     try:
-        from samgeo import SamGeo3
+        try:
+            from samgeo._samgeo_lib import get_samgeo
+        except ImportError:
+            try:
+                from _samgeo_lib import get_samgeo
+            except ImportError:
+                # Fall back to normal import if helper is not available
+                get_samgeo = None
+
+        if get_samgeo is not None:
+            SamGeo3 = get_samgeo().SamGeo3
+        else:
+            from samgeo import SamGeo3
 
         print("  [OK] SamGeo3 imported successfully")
         return True
