@@ -145,4 +145,3 @@ def get_samgeo() -> ModuleType:
         "  import sys, subprocess\n"
         "  subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', 'samgeo'])\n"
     )
-
