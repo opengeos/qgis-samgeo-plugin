@@ -133,6 +133,39 @@ class SamGeoPlugin:
             status_tip=self.tr("Open SamGeo Segmentation Panel"),
         )
 
+        # Clear GPU Memory action (menu only) - use QGIS refresh/clear icon
+        gpu_icon = ":/images/themes/default/mActionRefresh.svg"
+        self.add_action(
+            gpu_icon,
+            text=self.tr("Clear GPU Memory"),
+            callback=self.clear_gpu_memory,
+            parent=self.iface.mainWindow(),
+            status_tip=self.tr("Release GPU memory and clear CUDA cache"),
+            add_to_toolbar=False,
+        )
+
+        # Check for Updates action (menu only) - use QGIS download/update icon
+        update_icon = ":/images/themes/default/mActionFileOpen.svg"
+        self.add_action(
+            update_icon,
+            text=self.tr("Check for Updates..."),
+            callback=self.show_update_checker,
+            parent=self.iface.mainWindow(),
+            status_tip=self.tr("Check for plugin updates from GitHub"),
+            add_to_toolbar=False,
+        )
+
+        # About action (menu only) - use QGIS help/info icon
+        about_icon = ":/images/themes/default/mActionHelpContents.svg"
+        self.add_action(
+            about_icon,
+            text=self.tr("About SamGeo"),
+            callback=self.show_about,
+            parent=self.iface.mainWindow(),
+            status_tip=self.tr("About SamGeo Plugin"),
+            add_to_toolbar=False,
+        )
+
     def unload(self):
         """Remove the plugin menu item and icon from QGIS GUI."""
         for action in self.actions:
@@ -559,6 +592,15 @@ class SamGeoPlugin:
         self.add_to_map_check.setChecked(True)
         output_group_layout.addWidget(self.add_to_map_check)
 
+        # Auto-show results after segmentation
+        self.auto_show_check = QCheckBox("Auto-show results after segmentation")
+        self.auto_show_check.setChecked(True)
+        self.auto_show_check.setToolTip(
+            "Automatically save and display results after running segmentation\n"
+            "in the Text, Interactive, or Batch tabs"
+        )
+        output_group_layout.addWidget(self.auto_show_check)
+
         # Output path
         output_path_row = QHBoxLayout()
         self.output_path_edit = QLineEdit()
@@ -867,9 +909,12 @@ class SamGeoPlugin:
 
             # Update status label
             if num_masks > 0:
-                self.text_status_label.setText(
-                    f"Found {num_masks} object(s). Go to Output tab to save."
-                )
+                if self.auto_show_check.isChecked():
+                    self.text_status_label.setText(f"Found {num_masks} object(s).")
+                else:
+                    self.text_status_label.setText(
+                        f"Found {num_masks} object(s). Go to Output tab to save."
+                    )
                 self.text_status_label.setStyleSheet("color: green;")
             else:
                 self.text_status_label.setText(
@@ -878,6 +923,10 @@ class SamGeoPlugin:
                 self.text_status_label.setStyleSheet("color: orange;")
 
             self.log_message(f"Text segmentation complete. Found {num_masks} objects.")
+
+            # Auto-show results if enabled
+            if num_masks > 0:
+                self._auto_show_results()
 
         except Exception as e:
             self.text_status_label.setText("Segmentation failed!")
@@ -1038,9 +1087,12 @@ class SamGeoPlugin:
 
             # Update status label
             if num_masks > 0:
-                self.point_status_label.setText(
-                    f"Found {num_masks} object(s). Go to Output tab to save."
-                )
+                if self.auto_show_check.isChecked():
+                    self.point_status_label.setText(f"Found {num_masks} object(s).")
+                else:
+                    self.point_status_label.setText(
+                        f"Found {num_masks} object(s). Go to Output tab to save."
+                    )
                 self.point_status_label.setStyleSheet("color: green;")
             else:
                 self.point_status_label.setText(
@@ -1055,6 +1107,10 @@ class SamGeoPlugin:
             self.add_bg_point_btn.setChecked(False)
             if self.previous_tool:
                 self.canvas.setMapTool(self.previous_tool)
+
+            # Auto-show results if enabled
+            if num_masks > 0:
+                self._auto_show_results()
 
         except Exception as e:
             self.point_status_label.setText("Segmentation failed!")
@@ -1140,9 +1196,12 @@ class SamGeoPlugin:
 
             # Update status label
             if num_masks > 0:
-                self.box_status_label.setText(
-                    f"Found {num_masks} object(s). Go to Output tab to save."
-                )
+                if self.auto_show_check.isChecked():
+                    self.box_status_label.setText(f"Found {num_masks} object(s).")
+                else:
+                    self.box_status_label.setText(
+                        f"Found {num_masks} object(s). Go to Output tab to save."
+                    )
                 self.box_status_label.setStyleSheet("color: green;")
             else:
                 self.box_status_label.setText("No objects found. Try a different box.")
@@ -1154,6 +1213,10 @@ class SamGeoPlugin:
             self.draw_box_btn.setChecked(False)
             if self.previous_tool:
                 self.canvas.setMapTool(self.previous_tool)
+
+            # Auto-show results if enabled
+            if num_masks > 0:
+                self._auto_show_results()
 
         except Exception as e:
             self.box_status_label.setText("Segmentation failed!")
@@ -1269,9 +1332,12 @@ class SamGeoPlugin:
 
             # Update status label
             if num_masks > 0:
-                self.batch_status_label.setText(
-                    f"Found {num_masks} object(s). Go to Output tab to save."
-                )
+                if self.auto_show_check.isChecked():
+                    self.batch_status_label.setText(f"Found {num_masks} object(s).")
+                else:
+                    self.batch_status_label.setText(
+                        f"Found {num_masks} object(s). Go to Output tab to save."
+                    )
                 self.batch_status_label.setStyleSheet("color: green;")
             else:
                 self.batch_status_label.setText(
@@ -1286,12 +1352,16 @@ class SamGeoPlugin:
             # Deactivate batch point tool if active
             self.batch_add_point_btn.setChecked(False)
 
-            # Add output to map if saved and option is checked
+            # Add output to map if saved and option is checked (for batch-specific output)
             if output_path and self.add_to_map_check.isChecked():
                 layer = QgsRasterLayer(output_path, os.path.basename(output_path))
                 if layer.isValid():
                     QgsProject.instance().addMapLayer(layer)
                     self.results_text.append("Added result layer to map.")
+
+            # Auto-show results if enabled
+            if num_masks > 0:
+                self._auto_show_results()
 
         except Exception as e:
             self.batch_status_label.setText("Failed!")
@@ -1300,6 +1370,94 @@ class SamGeoPlugin:
 
         finally:
             self.progress_bar.setVisible(False)
+
+    def _auto_show_results(self):
+        """Automatically save and show results based on Output tab settings.
+
+        This method is called after successful segmentation to automatically
+        display results without requiring the user to manually click on the
+        Output tab and Save Masks button.
+        """
+        if not self.auto_show_check.isChecked():
+            return
+
+        if self.sam is None or self.sam.masks is None or len(self.sam.masks) == 0:
+            return
+
+        import tempfile
+
+        format_text = self.output_format_combo.currentText()
+        output_path = self.output_path_edit.text().strip()
+
+        # Generate temp file path if not specified
+        use_temp_file = False
+        if not output_path:
+            use_temp_file = True
+            if "Raster" in format_text:
+                temp_file = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+                output_path = temp_file.name
+                temp_file.close()
+            elif "GeoPackage" in format_text:
+                temp_file = tempfile.NamedTemporaryFile(suffix=".gpkg", delete=False)
+                output_path = temp_file.name
+                temp_file.close()
+            else:  # Shapefile
+                temp_dir = tempfile.mkdtemp()
+                output_path = os.path.join(temp_dir, "masks.shp")
+
+        try:
+            unique = self.unique_check.isChecked()
+
+            if "Raster" in format_text:
+                # Save as raster
+                self.sam.save_masks(output=output_path, unique=unique)
+
+                if self.add_to_map_check.isChecked():
+                    layer_name = (
+                        "samgeo_masks"
+                        if use_temp_file
+                        else os.path.basename(output_path)
+                    )
+                    layer = QgsRasterLayer(output_path, layer_name)
+                    if layer.isValid():
+                        QgsProject.instance().addMapLayer(layer)
+            else:
+                # Save as vector - first save as raster, then convert
+                temp_raster = tempfile.NamedTemporaryFile(
+                    suffix=".tif", delete=False
+                ).name
+                try:
+                    self.sam.save_masks(output=temp_raster, unique=unique)
+
+                    # Convert raster to vector
+                    try:
+                        from ._samgeo_lib import get_samgeo
+                    except ImportError:
+                        from _samgeo_lib import get_samgeo
+
+                    common = get_samgeo().common
+
+                    common.raster_to_vector(temp_raster, output_path)
+
+                    if self.add_to_map_check.isChecked():
+                        layer_name = (
+                            "samgeo_masks"
+                            if use_temp_file
+                            else os.path.basename(output_path)
+                        )
+                        layer = QgsVectorLayer(output_path, layer_name, "ogr")
+                        if layer.isValid():
+                            QgsProject.instance().addMapLayer(layer)
+                finally:
+                    if os.path.exists(temp_raster):
+                        os.remove(temp_raster)
+
+            self.results_text.append(f"\nAuto-saved to: {output_path}")
+            self.log_message(f"Auto-saved masks to: {output_path}")
+
+        except Exception as e:
+            self.log_message(f"Auto-show failed: {str(e)}", level=Qgis.Warning)
+            self.show_error(f"Auto-show failed: {str(e)}")
 
     def save_masks(self):
         """Save the segmentation masks."""
@@ -1395,3 +1553,188 @@ class SamGeoPlugin:
     def log_message(self, message, level=Qgis.Info):
         """Log a message to QGIS."""
         QgsMessageLog.logMessage(message, "SamGeo", level)
+
+    def clear_gpu_memory(self):
+        """Clear GPU memory and release CUDA resources."""
+        import gc
+
+        cleared_items = []
+
+        # Import torch early to use for cleanup
+        torch = None
+        try:
+            import torch as _torch
+
+            torch = _torch
+        except ImportError:
+            # PyTorch is optional; continue without GPU memory clearing if not installed.
+            pass
+
+        # Clear SamGeo model if loaded
+        if self.sam is not None:
+            try:
+                sam_obj = self.sam
+                # Clear the model
+                if hasattr(sam_obj, "model") and sam_obj.model is not None:
+                    try:
+                        sam_obj.model.cpu()
+                    except Exception:
+                        pass
+                    try:
+                        for param in sam_obj.model.parameters():
+                            param.data = None
+                            if param.grad is not None:
+                                param.grad = None
+                    except Exception:
+                        pass
+                    del sam_obj.model
+                    sam_obj.model = None
+
+                # Clear any other attributes
+                for attr in list(vars(sam_obj).keys()):
+                    try:
+                        setattr(sam_obj, attr, None)
+                    except Exception:
+                        # Ignore errors when clearing attributes; some may be read-only or protected.
+                        pass
+
+                # Delete the sam object
+                self.sam = None
+                del sam_obj
+                cleared_items.append("SamGeo model")
+
+                # Update UI status
+                if hasattr(self, "model_status") and self.model_status is not None:
+                    self.model_status.setText("Model: Not loaded")
+                    self.model_status.setStyleSheet("color: gray;")
+                if hasattr(self, "image_status") and self.image_status is not None:
+                    self.image_status.setText("Image: Not set")
+                    self.image_status.setStyleSheet("color: gray;")
+
+                # Also clear internal state for image and layer
+                self.current_image_path = None
+                self.current_layer = None
+
+            except Exception:
+                pass
+
+        # Run garbage collection multiple times
+        for _ in range(5):
+            gc.collect()
+
+        # Clear PyTorch CUDA cache
+        if torch is not None and torch.cuda.is_available():
+            try:
+                # Synchronize first
+                torch.cuda.synchronize()
+                # Empty cache
+                torch.cuda.empty_cache()
+                # IPC collect if available
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+                # Run gc and empty cache again
+                gc.collect()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+                cleared_items.append("CUDA cache")
+
+                # Get memory info for display
+                allocated = torch.cuda.memory_allocated() / 1024**2
+                reserved = torch.cuda.memory_reserved() / 1024**2
+                memory_info = f"\n\nGPU Memory:\n  Allocated: {allocated:.1f} MB\n  Reserved: {reserved:.1f} MB"
+
+                if allocated > 100:  # More than 100MB still allocated
+                    memory_info += "\n\nNote: Some GPU memory may still be held by PyTorch's memory allocator. Restart QGIS to fully release all GPU memory."
+            except Exception as e:
+                memory_info = f"\n\nError clearing CUDA: {str(e)}"
+        elif torch is None:
+            memory_info = "\n\nPyTorch not installed."
+        else:
+            memory_info = "\n\nNo CUDA GPU available."
+
+        if cleared_items:
+            message = f"Cleared: {', '.join(cleared_items)}{memory_info}"
+        else:
+            message = f"No models loaded to clear.{memory_info}"
+
+        self.iface.statusBarIface().showMessage("GPU memory cleared", 3000)
+        QMessageBox.information(
+            self.iface.mainWindow(),
+            "Clear GPU Memory",
+            message,
+        )
+
+    def show_update_checker(self):
+        """Display the update checker dialog."""
+        try:
+            from .update_checker import UpdateCheckerDialog
+        except ImportError:
+            try:
+                from update_checker import UpdateCheckerDialog
+            except ImportError as e:
+                QMessageBox.critical(
+                    self.iface.mainWindow(),
+                    "Error",
+                    f"Failed to import update checker dialog:\n{str(e)}",
+                )
+                return
+
+        try:
+            dialog = UpdateCheckerDialog(self.plugin_dir, self.iface.mainWindow())
+            dialog.exec_()
+        except Exception as e:
+            QMessageBox.critical(
+                self.iface.mainWindow(),
+                "Error",
+                f"Failed to open update checker:\n{str(e)}",
+            )
+
+    def show_about(self):
+        """Display the about dialog."""
+        import re
+
+        # Read version from metadata.txt
+        version = "Unknown"
+        try:
+            metadata_path = os.path.join(self.plugin_dir, "metadata.txt")
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                version_match = re.search(r"^version=(.+)$", content, re.MULTILINE)
+                if version_match:
+                    version = version_match.group(1).strip()
+        except Exception as e:
+            QMessageBox.warning(
+                self.iface.mainWindow(),
+                "SamGeo Plugin",
+                f"Could not read version from metadata.txt:\n{str(e)}",
+            )
+
+        about_text = f"""
+<h2>SamGeo Plugin for QGIS</h2>
+<p>Version: {version}</p>
+<p>Author: Qiusheng Wu</p>
+
+<h3>Features:</h3>
+<ul>
+<li><b>Text-based Segmentation:</b> Describe objects to segment using natural language</li>
+<li><b>Interactive Point Prompts:</b> Click on map to segment objects with foreground/background points</li>
+<li><b>Box Prompts:</b> Draw rectangles to segment regions of interest</li>
+<li><b>Batch Point Mode:</b> Process multiple points for batch segmentation</li>
+<li><b>Multiple SAM Models:</b> Support for SAM1, SAM2, and SAM3 models</li>
+</ul>
+
+<h3>Links:</h3>
+<ul>
+<li><a href="https://samgeo.gishub.org">Documentation</a></li>
+<li><a href="https://github.com/opengeos/qgis-samgeo-plugin">GitHub Repository</a></li>
+<li><a href="https://github.com/opengeos/qgis-samgeo-plugin/issues">Report Issues</a></li>
+</ul>
+
+<p>Licensed under MIT License</p>
+"""
+        QMessageBox.about(
+            self.iface.mainWindow(),
+            "About SamGeo Plugin",
+            about_text,
+        )
