@@ -145,8 +145,7 @@ def show_programmatic_usage():
     print("Programmatic Usage Examples")
     print("=" * 60)
 
-    print(
-        """
+    print("""
 # Initialize the model
 from samgeo import SamGeo3
 
@@ -177,8 +176,7 @@ sam.save_masks("box_result.tif")
 # Convert raster to vector
 from samgeo import common
 common.raster_to_vector("buildings.tif", "buildings.gpkg")
-"""
-    )
+""")
 
 
 def run_tests():
