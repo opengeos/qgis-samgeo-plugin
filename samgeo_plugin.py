@@ -83,6 +83,11 @@ class SamGeoPlugin:
         self.box_tool = None
         self.previous_tool = None
 
+        # Dependency management
+        self._deps_available = False
+        self._deps_dock = None
+        self._deps_install_worker = None
+
     def tr(self, message):
         """Translate a message."""
         return QCoreApplication.translate("SamGeo", message)
@@ -176,6 +181,18 @@ class SamGeoPlugin:
         if self.dock_widget is not None:
             self.iface.removeDockWidget(self.dock_widget)
 
+        # Clean up deps installer
+        if self._deps_install_worker is not None:
+            if self._deps_install_worker.isRunning():
+                self._deps_install_worker.cancel()
+                self._deps_install_worker.terminate()
+                self._deps_install_worker.wait(5000)
+            self._deps_install_worker = None
+
+        if self._deps_dock is not None:
+            self.iface.removeDockWidget(self._deps_dock)
+            self._deps_dock = None
+
         # Remove toolbar
         del self.toolbar
 
@@ -184,8 +201,134 @@ class SamGeoPlugin:
             del self.sam
             self.sam = None
 
+    # ------------------------------------------------------------------
+    # Dependency management
+    # ------------------------------------------------------------------
+
+    def _ensure_dependencies(self):
+        """Check if dependencies are installed; show installer if not.
+
+        Returns:
+            True if dependencies are available, False if installer was shown.
+        """
+        if self._deps_available:
+            return True
+
+        try:
+            from .core.venv_manager import (
+                ensure_venv_packages_available,
+                get_venv_status,
+            )
+
+            is_ready, message = get_venv_status()
+            if is_ready:
+                ensure_venv_packages_available()
+                self._deps_available = True
+                return True
+        except Exception:
+            pass
+
+        self._show_deps_install_dock()
+        return False
+
+    def _show_deps_install_dock(self):
+        """Create and show the dependency installation dock widget."""
+        if self._deps_dock is not None:
+            self._deps_dock.show()
+            self._deps_dock.raise_()
+            return
+
+        from .deps_install_dialog import DepsInstallDockWidget
+
+        self._deps_dock = DepsInstallDockWidget(self.iface.mainWindow())
+        self._deps_dock.install_requested.connect(self._on_install_requested)
+        self._deps_dock.cancel_requested.connect(self._on_cancel_install)
+
+        self.iface.addDockWidget(Qt.RightDockWidgetArea, self._deps_dock)
+        self._deps_dock.show()
+        self._deps_dock.raise_()
+
+    def _on_install_requested(self):
+        """Handle install button click from the deps dock."""
+        if (
+            self._deps_install_worker is not None
+            and self._deps_install_worker.isRunning()
+        ):
+            return
+
+        from .core.venv_manager import detect_nvidia_gpu
+        from .workers.deps_install_worker import DepsInstallWorker
+
+        has_gpu, _ = detect_nvidia_gpu()
+
+        self._deps_install_worker = DepsInstallWorker(cuda_enabled=has_gpu)
+        self._deps_install_worker.progress.connect(self._on_install_progress)
+        self._deps_install_worker.finished.connect(self._on_install_finished)
+
+        if self._deps_dock:
+            self._deps_dock.show_progress_ui()
+
+        self._deps_install_worker.start()
+
+    def _on_install_progress(self, percent, message):
+        """Handle progress updates from the install worker.
+
+        Args:
+            percent: Progress percentage (0-100).
+            message: Status message.
+        """
+        if self._deps_dock:
+            self._deps_dock.set_progress(percent, message)
+
+    def _on_install_finished(self, success, message):
+        """Handle installation completion.
+
+        Args:
+            success: Whether installation succeeded.
+            message: Completion message.
+        """
+        if self._deps_dock:
+            self._deps_dock.show_complete_ui(success, message)
+
+        if success:
+            self._deps_available = True
+
+            # Ensure venv packages are on sys.path
+            try:
+                from .core.venv_manager import ensure_venv_packages_available
+
+                ensure_venv_packages_available()
+            except Exception:
+                pass
+
+            # Close the deps dock and open the main plugin panel
+            if self._deps_dock:
+                self.iface.removeDockWidget(self._deps_dock)
+                self._deps_dock.deleteLater()
+                self._deps_dock = None
+
+            # Now show the main plugin dock
+            if self.dock_widget is None:
+                self.dock_widget = self.create_dock_widget()
+                self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock_widget)
+            else:
+                self.dock_widget.show()
+
+    def _on_cancel_install(self):
+        """Handle cancel button click during installation."""
+        if (
+            self._deps_install_worker is not None
+            and self._deps_install_worker.isRunning()
+        ):
+            self._deps_install_worker.cancel()
+        if self._deps_dock:
+            self._deps_dock.show_install_ui()
+
     def run(self):
-        """Run the plugin - show the dock widget."""
+        """Run the plugin - check deps then show the dock widget."""
+        if not self._ensure_dependencies():
+            return  # Installer dock is now showing
+
         if self.dock_widget is None:
             self.dock_widget = self.create_dock_widget()
             self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock_widget)
