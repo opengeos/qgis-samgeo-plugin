@@ -24,6 +24,33 @@ import sys
 _CACHED: Optional[ModuleType] = None
 
 
+def _ensure_venv_on_path() -> bool:
+    """Attempt to add the managed venv site-packages to sys.path.
+
+    Returns:
+        True if venv site-packages was added or already present.
+    """
+    try:
+        from .core.venv_manager import ensure_venv_packages_available, get_venv_status
+
+        is_ready, _ = get_venv_status()
+        if is_ready:
+            return ensure_venv_packages_available()
+    except ImportError:
+        try:
+            from core.venv_manager import (
+                ensure_venv_packages_available,
+                get_venv_status,
+            )
+
+            is_ready, _ = get_venv_status()
+            if is_ready:
+                return ensure_venv_packages_available()
+        except ImportError:
+            pass
+    return False
+
+
 def _is_module_from_dir(mod: ModuleType, directory: Path) -> bool:
     try:
         mod_file = getattr(mod, "__file__", None)
@@ -110,6 +137,9 @@ def get_samgeo() -> ModuleType:
     if _CACHED is not None:
         return _CACHED
 
+    # Try to ensure managed venv packages are available
+    _ensure_venv_on_path()
+
     plugin_dir = Path(__file__).resolve().parent
 
     # Normal import first (works when plugin package isn't named `samgeo`)
@@ -136,11 +166,11 @@ def get_samgeo() -> ModuleType:
     py = getattr(sys, "executable", "python")
     ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     raise ImportError(
-        "SamGeo plugin could not import the external 'samgeo' library because the plugin "
-        "package name shadows it.\n\n"
+        "SamGeo plugin could not import the external 'samgeo' library.\n\n"
+        "Please use the 'Install Dependencies' button in the SamGeo panel\n"
+        "to install all required packages automatically.\n\n"
         f"QGIS Python:\n  executable: {py}\n  version: {ver}\n\n"
-        "Fix: install the SamGeo Python package into *this same Python environment*.\n"
-        "In QGIS, open Python Console and run:\n"
+        "Alternatively, install manually in QGIS Python Console:\n"
         "  import sys, subprocess\n"
         "  subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', 'samgeo'])\n"
     )
