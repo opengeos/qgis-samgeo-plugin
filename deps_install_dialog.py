@@ -42,7 +42,9 @@ class DepsInstallDockWidget(QDockWidget):
         """
         super().__init__("SamGeo - Setup", parent)
         self.setObjectName("SamGeoDepsInstallDock")
-        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -221,7 +223,7 @@ class DepsInstallDockWidget(QDockWidget):
             from .core.venv_manager import remove_venv
 
             remove_venv()
-        except Exception:
+        except Exception:  # nosec B110
             pass
         self.reinstall_button.hide()
         self.install_requested.emit()

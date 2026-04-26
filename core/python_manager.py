@@ -9,7 +9,7 @@ Adapted from the GeoAI QGIS plugin's python_manager.py.
 import os
 import platform
 import shutil
-import subprocess
+import subprocess  # nosec B404
 import sys
 import tarfile
 import tempfile
@@ -40,12 +40,12 @@ PYTHON_VERSIONS = {
 }
 
 
-def _log(message: str, level=Qgis.Info):
+def _log(message: str, level=Qgis.MessageLevel.Info):
     """Log a message to the QGIS message log.
 
     Args:
         message: The message to log.
-        level: The log level (default: Qgis.Info).
+        level: The log level (default: Qgis.MessageLevel.Info).
     """
     QgsMessageLog.logMessage(message, "SamGeo", level=level)
 
@@ -236,13 +236,13 @@ def download_python_standalone(
         Tuple of (success, message).
     """
     if standalone_python_exists():
-        _log("Python standalone already exists", Qgis.Info)
+        _log("Python standalone already exists", Qgis.MessageLevel.Info)
         return True, "Python standalone already installed"
 
     url = get_download_url()
     python_version = get_python_full_version()
 
-    _log(f"Downloading Python {python_version} from: {url}", Qgis.Info)
+    _log(f"Downloading Python {python_version} from: {url}", Qgis.MessageLevel.Info)
 
     if progress_callback:
         progress_callback(0, f"Downloading Python {python_version}...")
@@ -271,7 +271,7 @@ def download_python_standalone(
                 )
             else:
                 error_msg = f"Download failed: {error_msg}"
-            _log(error_msg, Qgis.Critical)
+            _log(error_msg, Qgis.MessageLevel.Critical)
             return False, error_msg
 
         if cancel_check and cancel_check():
@@ -287,7 +287,10 @@ def download_python_standalone(
         with open(temp_path, "wb") as f:
             f.write(content.data())
 
-        _log(f"Download complete ({len(content)} bytes), extracting...", Qgis.Info)
+        _log(
+            f"Download complete ({len(content)} bytes), extracting...",
+            Qgis.MessageLevel.Info,
+        )
 
         if progress_callback:
             progress_callback(6, "Extracting Python...")
@@ -312,7 +315,7 @@ def download_python_standalone(
         if success:
             if progress_callback:
                 progress_callback(10, f"Python {python_version} installed")
-            _log("Python standalone installed successfully", Qgis.Success)
+            _log("Python standalone installed successfully", Qgis.MessageLevel.Success)
             return True, f"Python {python_version} installed successfully"
         else:
             return False, f"Verification failed: {verify_msg}"
@@ -321,7 +324,7 @@ def download_python_standalone(
         return False, "Download cancelled"
     except Exception as e:
         error_msg = f"Installation failed: {str(e)}"
-        _log(error_msg, Qgis.Critical)
+        _log(error_msg, Qgis.MessageLevel.Critical)
 
         if sys.platform == "win32":
             error_lower = str(e).lower()
@@ -333,7 +336,7 @@ def download_python_standalone(
                     "  2. Add an exclusion for: {}\n"
                     "  3. Try the installation again".format(STANDALONE_DIR)
                 )
-                _log(antivirus_help, Qgis.Warning)
+                _log(antivirus_help, Qgis.MessageLevel.Warning)
                 error_msg = f"{error_msg}\n\n{antivirus_help}"
 
         return False, error_msg
@@ -375,7 +378,7 @@ def verify_standalone_python() -> Tuple[bool, str]:
         env = _get_clean_env()
         subprocess_kwargs = _get_subprocess_kwargs()
 
-        result = subprocess.run(
+        result = subprocess.run(  # nosec B603
             [python_path, "-c", "import sys; print(sys.version)"],
             capture_output=True,
             text=True,
@@ -393,7 +396,7 @@ def verify_standalone_python() -> Tuple[bool, str]:
                 _log(
                     f"Python version mismatch: got {version_output}, "
                     f"expected {get_python_full_version()}",
-                    Qgis.Warning,
+                    Qgis.MessageLevel.Warning,
                 )
                 return (
                     False,
@@ -401,11 +404,14 @@ def verify_standalone_python() -> Tuple[bool, str]:
                     f"expected {get_python_full_version()}",
                 )
 
-            _log(f"Verified Python standalone: {version_output}", Qgis.Success)
+            _log(
+                f"Verified Python standalone: {version_output}",
+                Qgis.MessageLevel.Success,
+            )
             return True, f"Python {version_output} verified"
         else:
             error = result.stderr or "Unknown error"
-            _log(f"Python verification failed: {error}", Qgis.Warning)
+            _log(f"Python verification failed: {error}", Qgis.MessageLevel.Warning)
             return False, f"Verification failed: {error[:100]}"
 
     except subprocess.TimeoutExpired:
@@ -425,9 +431,9 @@ def remove_standalone_python() -> Tuple[bool, str]:
 
     try:
         shutil.rmtree(STANDALONE_DIR)
-        _log("Removed standalone Python installation", Qgis.Success)
+        _log("Removed standalone Python installation", Qgis.MessageLevel.Success)
         return True, "Standalone Python removed"
     except Exception as e:
         error_msg = f"Failed to remove: {str(e)}"
-        _log(error_msg, Qgis.Warning)
+        _log(error_msg, Qgis.MessageLevel.Warning)
         return False, error_msg
