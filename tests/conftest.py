@@ -7,6 +7,7 @@ from ``PyQt6.QtGui`` under ``qgis.PyQt.QtWidgets`` (they moved out of
 ``QtWidgets`` in Qt6).
 """
 
+import importlib.util
 import pathlib
 import sys
 import types
@@ -61,16 +62,23 @@ def _install_qgis_stub() -> None:
 
 
 def _install_plugin_alias() -> None:
-    """Expose the repo root as the ``samgeo_plugin`` package.
+    """Load the repo's ``__init__.py`` as the ``samgeo_plugin`` package.
 
-    QGIS loads this plugin under the directory name ``samgeo_plugin`` (see
-    ``install_plugin.sh``). The repo directory itself uses hyphens, which is
-    not a valid Python module name, so we register an explicit alias here.
+    QGIS installs this plugin under the directory name ``samgeo_plugin`` (see
+    ``install_plugin.sh``); the repo directory itself uses hyphens, which is
+    not a valid Python module name. We use ``importlib.util`` to execute the
+    real ``__init__.py`` rather than registering a blank ``ModuleType`` alias,
+    so the smoke test also validates the package init under PyQt6.
     """
     repo_root = pathlib.Path(__file__).resolve().parent.parent
-    pkg = types.ModuleType("samgeo_plugin")
-    pkg.__path__ = [str(repo_root)]
-    sys.modules["samgeo_plugin"] = pkg
+    spec = importlib.util.spec_from_file_location(
+        "samgeo_plugin",
+        repo_root / "__init__.py",
+        submodule_search_locations=[str(repo_root)],
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["samgeo_plugin"] = module
+    spec.loader.exec_module(module)
 
 
 _install_qgis_stub()

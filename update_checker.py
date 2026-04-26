@@ -98,6 +98,10 @@ class VersionCheckWorker(QThread):
             self.error.emit(f"Error checking for updates: {str(e)}")
 
 
+class _DownloadCanceled(Exception):
+    """Raised inside DownloadWorker.run when the user cancels the download."""
+
+
 class DownloadWorker(QThread):
     """Worker thread for downloading and installing the plugin update."""
 
@@ -109,9 +113,17 @@ class DownloadWorker(QThread):
         super().__init__()
         self.plugin_dir = plugin_dir
 
+    def _check_canceled(self):
+        """Raise ``_DownloadCanceled`` if cooperative cancel was requested."""
+        if self.isInterruptionRequested():
+            raise _DownloadCanceled()
+
     def run(self):
         """Download and install the latest plugin version."""
         temp_dir = None
+        target_dir = None
+        backup_dir = None
+        moved_to_backup = False
         try:
             # Create temporary directory
             temp_dir = tempfile.mkdtemp(prefix="samgeo_update_")
@@ -121,6 +133,8 @@ class DownloadWorker(QThread):
             self.progress.emit(10, "Downloading plugin from GitHub...")
 
             def reporthook(block_num, block_size, total_size):
+                # Cooperative cancel: aborts urlretrieve from inside its callback.
+                self._check_canceled()
                 if total_size > 0:
                     downloaded = block_num * block_size
                     percent = min(int((downloaded / total_size) * 50), 50)
@@ -128,6 +142,7 @@ class DownloadWorker(QThread):
 
             urlretrieve(_require_https(ZIP_URL), zip_path, reporthook)  # nosec B310
 
+            self._check_canceled()
             self.progress.emit(60, "Extracting files...")
 
             # Extract the zip file
@@ -143,6 +158,7 @@ class DownloadWorker(QThread):
                         )
                 zip_ref.extractall(extract_dir)
 
+            self._check_canceled()
             self.progress.emit(70, "Locating plugin files...")
 
             # Find the plugin directory in the extracted files
@@ -157,6 +173,7 @@ class DownloadWorker(QThread):
                 self.error.emit("Could not find plugin files in downloaded archive")
                 return
 
+            self._check_canceled()
             self.progress.emit(80, "Installing update...")
 
             # Get the parent directory of the current plugin (QGIS plugins folder)
@@ -167,9 +184,14 @@ class DownloadWorker(QThread):
             # Backup current plugin (optional - we'll just replace)
             backup_dir = os.path.join(temp_dir, "backup")
 
+            # Last cancel checkpoint before we touch the live install. Past this
+            # point the finally block is responsible for restoring the backup.
+            self._check_canceled()
+
             # If target exists, move it to backup
             if os.path.exists(target_dir):
                 shutil.move(target_dir, backup_dir)
+                moved_to_backup = True
 
             try:
                 # Copy new plugin files
@@ -188,6 +210,7 @@ class DownloadWorker(QThread):
                     if os.path.exists(target_dir):
                         shutil.rmtree(target_dir)
                     shutil.move(backup_dir, target_dir)
+                    moved_to_backup = False
                 else:
                     # Backup is missing or invalid, cannot restore
                     self.error.emit(
@@ -195,6 +218,8 @@ class DownloadWorker(QThread):
                     )
                 raise e
 
+        except _DownloadCanceled:
+            self.error.emit("Update canceled.")
         except HTTPError as e:
             self.error.emit(f"HTTP Error downloading: {e.code} - {e.reason}")
         except URLError as e:
@@ -202,6 +227,20 @@ class DownloadWorker(QThread):
         except Exception as e:
             self.error.emit(f"Error installing update: {str(e)}")
         finally:
+            # If we moved the live plugin into the backup but never copied the
+            # new files into place, restore it before nuking the temp dir.
+            if (
+                moved_to_backup
+                and target_dir
+                and backup_dir
+                and not os.path.exists(target_dir)
+                and os.path.isdir(backup_dir)
+            ):
+                try:
+                    shutil.move(backup_dir, target_dir)
+                except OSError:
+                    pass
+
             # Cleanup temp directory
             if temp_dir and os.path.exists(temp_dir):
                 try:
@@ -508,7 +547,14 @@ class UpdateCheckerDialog(QDialog):
             if reply != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
-            self.download_worker.terminate()
-            self.download_worker.wait()
+            # Cooperative cancel: the worker checks isInterruptionRequested at
+            # safe points and restores the backup before its finally cleanup,
+            # so we avoid bricking the install via a hard terminate.
+            self.download_worker.requestInterruption()
+            if not self.download_worker.wait(10000):
+                # Last-resort hard kill if the worker is wedged. The worker's
+                # finally still tries to restore from backup on next start.
+                self.download_worker.terminate()
+                self.download_worker.wait()
 
         event.accept()

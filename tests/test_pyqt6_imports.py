@@ -4,9 +4,10 @@ This catches short-form Qt enum regressions (for example ``Qt.AlignCenter``
 instead of ``Qt.AlignmentFlag.AlignCenter``) which raise ``AttributeError`` in
 PyQt6 during class-body evaluation.
 
-The plugin package is auto-discovered: the first sibling directory of
-``tests/`` that contains a ``metadata.txt`` is treated as the plugin root,
-so this file does not need to be edited per-plugin.
+The plugin package lives at the repo root (``metadata.txt`` sits next to
+``samgeo_plugin.py``), so ``PLUGIN_ROOT`` is set to the repo root and the
+package is exposed under the install-time name ``samgeo_plugin`` by
+``conftest.py``. Update both if the layout changes.
 """
 
 import importlib
