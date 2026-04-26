@@ -225,7 +225,7 @@ class SamGeoPlugin:
                 ensure_venv_packages_available()
                 self._deps_available = True
                 return True
-        except Exception:
+        except Exception:  # nosec B110
             pass
 
         self._show_deps_install_dock()
@@ -244,7 +244,7 @@ class SamGeoPlugin:
         self._deps_dock.install_requested.connect(self._on_install_requested)
         self._deps_dock.cancel_requested.connect(self._on_cancel_install)
 
-        self.iface.addDockWidget(Qt.RightDockWidgetArea, self._deps_dock)
+        self.iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._deps_dock)
         self._deps_dock.show()
         self._deps_dock.raise_()
 
@@ -298,7 +298,7 @@ class SamGeoPlugin:
                 from .core.venv_manager import ensure_venv_packages_available
 
                 ensure_venv_packages_available()
-            except Exception:
+            except Exception:  # nosec B110
                 pass
 
             # Close the deps dock and open the main plugin panel
@@ -310,7 +310,9 @@ class SamGeoPlugin:
             # Now show the main plugin dock
             if self.dock_widget is None:
                 self.dock_widget = self.create_dock_widget()
-                self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock_widget)
+                self.iface.addDockWidget(
+                    Qt.DockWidgetArea.RightDockWidgetArea, self.dock_widget
+                )
             else:
                 self.dock_widget.show()
 
@@ -331,14 +333,18 @@ class SamGeoPlugin:
 
         if self.dock_widget is None:
             self.dock_widget = self.create_dock_widget()
-            self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock_widget)
+            self.iface.addDockWidget(
+                Qt.DockWidgetArea.RightDockWidgetArea, self.dock_widget
+            )
         else:
             self.dock_widget.show()
 
     def create_dock_widget(self):
         """Create the dock widget with all controls."""
         dock = QDockWidget("SamGeo Segmentation", self.iface.mainWindow())
-        dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
 
         # Main widget
         main_widget = QWidget()
@@ -807,7 +813,7 @@ class SamGeoPlugin:
         for layer in layers:
             if isinstance(layer, QgsVectorLayer):
                 # Only include point layers
-                if layer.geometryType() == QgsWkbTypes.PointGeometry:
+                if layer.geometryType() == QgsWkbTypes.GeometryType.PointGeometry:
                     self.vector_layer_combo.addItem(layer.name(), layer.id())
 
     def browse_vector_file(self):
@@ -1118,7 +1124,9 @@ class SamGeoPlugin:
             # Update list widget
             label_text = "FG" if foreground else "BG"
             item = QListWidgetItem(f"{label_text}: ({px:.1f}, {py:.1f})")
-            item.setForeground(Qt.green if foreground else Qt.red)
+            item.setForeground(
+                Qt.GlobalColor.green if foreground else Qt.GlobalColor.red
+            )
             self.points_list.addItem(item)
 
     def clear_points(self):
@@ -1163,7 +1171,7 @@ class SamGeoPlugin:
             item = QListWidgetItem(
                 f"Point {len(self.batch_point_coords)}: ({px:.1f}, {py:.1f})"
             )
-            item.setForeground(Qt.green)
+            item.setForeground(Qt.GlobalColor.green)
             self.batch_points_list.addItem(item)
 
             # Update count label
@@ -1599,7 +1607,9 @@ class SamGeoPlugin:
             self.log_message(f"Auto-saved masks to: {output_path}")
 
         except Exception as e:
-            self.log_message(f"Auto-show failed: {str(e)}", level=Qgis.Warning)
+            self.log_message(
+                f"Auto-show failed: {str(e)}", level=Qgis.MessageLevel.Warning
+            )
             self.show_error(f"Auto-show failed: {str(e)}")
 
     def save_masks(self):
@@ -1691,9 +1701,9 @@ class SamGeoPlugin:
     def show_error(self, message):
         """Show an error message."""
         QMessageBox.critical(self.iface.mainWindow(), "SamGeo Error", message)
-        self.log_message(message, level=Qgis.Critical)
+        self.log_message(message, level=Qgis.MessageLevel.Critical)
 
-    def log_message(self, message, level=Qgis.Info):
+    def log_message(self, message, level=Qgis.MessageLevel.Info):
         """Log a message to QGIS."""
         QgsMessageLog.logMessage(message, "SamGeo", level)
 
@@ -1721,14 +1731,14 @@ class SamGeoPlugin:
                 if hasattr(sam_obj, "model") and sam_obj.model is not None:
                     try:
                         sam_obj.model.cpu()
-                    except Exception:
+                    except Exception:  # nosec B110
                         pass
                     try:
                         for param in sam_obj.model.parameters():
                             param.data = None
                             if param.grad is not None:
                                 param.grad = None
-                    except Exception:
+                    except Exception:  # nosec B110
                         pass
                     del sam_obj.model
                     sam_obj.model = None
@@ -1737,7 +1747,7 @@ class SamGeoPlugin:
                 for attr in list(vars(sam_obj).keys()):
                     try:
                         setattr(sam_obj, attr, None)
-                    except Exception:
+                    except Exception:  # nosec B110
                         # Ignore errors when clearing attributes; some may be read-only or protected.
                         pass
 
@@ -1758,7 +1768,7 @@ class SamGeoPlugin:
                 self.current_image_path = None
                 self.current_layer = None
 
-            except Exception:
+            except Exception:  # nosec B110
                 pass
 
         # Run garbage collection multiple times
@@ -1825,7 +1835,7 @@ class SamGeoPlugin:
 
         try:
             dialog = UpdateCheckerDialog(self.plugin_dir, self.iface.mainWindow())
-            dialog.exec_()
+            dialog.exec()
         except Exception as e:
             QMessageBox.critical(
                 self.iface.mainWindow(),

@@ -148,7 +148,7 @@ def get_samgeo() -> ModuleType:
         if not _is_module_from_dir(imported, plugin_dir):
             _CACHED = imported
             return imported
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
     imported = _import_samgeo_without_plugin_shadow(plugin_dir)
