@@ -21,7 +21,9 @@ category=Raster
 icon=icons/icon.png
 experimental=True
 deprecated=False
-changelog=Fix macOS QGIS installer dependency installation and bump patch version.
+changelog=
+    1.4.1 - Dependency installer fix
+        - Fix macOS QGIS installer dependency installation
     1.4.0 - Qt5/Qt6 dual compatibility for QGIS 4.0 (qualify enums, replace exec_())
     1.3.0 - Add one-click installation of dependencies
     1.1.0 - Fix plugin name import
