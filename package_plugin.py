@@ -48,7 +48,11 @@ def should_exclude_file(filename: str) -> bool:
 
 
 def should_exclude_dir(dirname: str) -> bool:
-    return dirname.startswith(".") or dirname in EXCLUDE_DIRS or dirname.endswith(".egg-info")
+    return (
+        dirname.startswith(".")
+        or dirname in EXCLUDE_DIRS
+        or dirname.endswith(".egg-info")
+    )
 
 
 def get_version_from_metadata(plugin_dir: Path) -> str:
@@ -61,7 +65,9 @@ def get_version_from_metadata(plugin_dir: Path) -> str:
     return "unknown"
 
 
-def package_plugin(source_dir: Path, output_path: Path | None, target_name: str) -> Path:
+def package_plugin(
+    source_dir: Path, output_path: Path | None, target_name: str
+) -> Path:
     if not source_dir.exists():
         raise FileNotFoundError(f"Source directory not found: {source_dir}")
     if not source_dir.is_dir():
@@ -103,9 +109,15 @@ def package_plugin(source_dir: Path, output_path: Path | None, target_name: str)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", "-o", type=Path, default=None, help="Output path for the zip file")
-    parser.add_argument("--source", "-s", type=Path, default=Path("."), help="Source plugin directory")
-    parser.add_argument("--name", "-n", default=None, help="Target plugin folder name in the zip")
+    parser.add_argument(
+        "--output", "-o", type=Path, default=None, help="Output path for the zip file"
+    )
+    parser.add_argument(
+        "--source", "-s", type=Path, default=Path("."), help="Source plugin directory"
+    )
+    parser.add_argument(
+        "--name", "-n", default=None, help="Target plugin folder name in the zip"
+    )
     args = parser.parse_args()
 
     source_dir = args.source.resolve()
