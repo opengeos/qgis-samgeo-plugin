@@ -41,9 +41,9 @@ from qgis.core import (
 # Import the map tools
 from .map_tools import PointPromptTool, BoxPromptTool
 
-
 TOOLBAR_OBJECT_NAME = "SamGeo"
 MENU_TITLE = "&SamGeo"
+
 
 class SamGeoPlugin:
     """QGIS Plugin for remote sensing image segmentation using SamGeo."""
@@ -176,7 +176,6 @@ class SamGeoPlugin:
             status_tip=self.tr("About SamGeo Plugin"),
             add_to_toolbar=False,
         )
-
 
     def _remove_toolbar(self, toolbar):
         """Detach and schedule deletion of a plugin toolbar widget."""
