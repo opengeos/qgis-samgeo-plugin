@@ -4,7 +4,7 @@ SamGeo QGIS Plugin - Main Plugin Class
 
 import os
 
-from qgis.PyQt.QtCore import Qt, QCoreApplication
+from qgis.PyQt.QtCore import Qt, QCoreApplication, QVariant
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
     QAction,
@@ -30,6 +30,7 @@ from qgis.PyQt.QtWidgets import (
     QListWidgetItem,
 )
 from qgis.core import (
+    QgsField,
     QgsProject,
     QgsRasterLayer,
     QgsVectorLayer,
@@ -1684,6 +1685,7 @@ class SamGeoPlugin:
                     common = get_samgeo().common
 
                     common.raster_to_vector(temp_raster, output_path)
+                    self._attach_mask_scores(output_path)
 
                     if self.add_to_map_check.isChecked():
                         layer_name = (
@@ -1706,6 +1708,44 @@ class SamGeoPlugin:
                 f"Auto-show failed: {str(e)}", level=Qgis.MessageLevel.Warning
             )
             self.show_error(f"Auto-show failed: {str(e)}")
+
+    def _attach_mask_scores(self, output_path):
+        """Write each mask's confidence score into the saved vector layer.
+
+        ``save_masks`` records ``mask_scores`` (raster value -> confidence) on
+        the model (segment-geospatial >= 1.4.2), and ``raster_to_vector``
+        keeps the raster value in a ``value`` field, so the two are joined
+        here as a ``score`` attribute. Older segment-geospatial versions have
+        no ``mask_scores`` and the layer is left unchanged.
+
+        Args:
+            output_path: Path of the vector file written by raster_to_vector.
+        """
+        scores = getattr(self.sam, "mask_scores", None)
+        if not scores:
+            return
+        layer = QgsVectorLayer(output_path, "samgeo_scores", "ogr")
+        if not layer.isValid():
+            return
+        value_idx = layer.fields().indexOf("value")
+        if value_idx < 0:
+            return
+        provider = layer.dataProvider()
+        if layer.fields().indexOf("score") < 0:
+            if not provider.addAttributes([QgsField("score", QVariant.Double)]):
+                return
+            layer.updateFields()
+        score_idx = layer.fields().indexOf("score")
+        changes = {}
+        for feature in layer.getFeatures():
+            try:
+                key = int(feature[value_idx])
+            except (TypeError, ValueError):
+                continue
+            if key in scores:
+                changes[feature.id()] = {score_idx: float(scores[key])}
+        if changes:
+            provider.changeAttributeValues(changes)
 
     def save_masks(self):
         """Save the segmentation masks."""
@@ -1771,6 +1811,7 @@ class SamGeoPlugin:
                     common = get_samgeo().common
 
                     common.raster_to_vector(temp_raster, output_path)
+                    self._attach_mask_scores(output_path)
 
                     if self.add_to_map_check.isChecked():
                         layer_name = (

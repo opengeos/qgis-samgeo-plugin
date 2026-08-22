@@ -3,7 +3,7 @@ name=SamGeo
 qgisMinimumVersion=3.22
 qgisMaximumVersion=4.99
 description=Segment remote sensing images using SAM (Segment Anything Model) with text, point, and box prompts.
-version=1.4.1
+version=1.4.2
 author=Qiusheng Wu
 email=giswqs@gmail.com
 about=A QGIS plugin for remote sensing image segmentation powered by Meta's Segment Anything Model (SAM).
@@ -22,6 +22,10 @@ icon=icons/icon.png
 experimental=True
 deprecated=False
 changelog=
+    1.4.2 - Confidence scores in vector output
+        - Saved vector masks carry a per-feature "score" attribute with the
+          model's confidence (requires segment-geospatial >= 1.4.2)
+        - Fix plugin reload cleanup
     1.4.1 - Dependency installer fix
         - Fix macOS QGIS installer dependency installation
     1.4.0 - Qt5/Qt6 dual compatibility for QGIS 4.0 (qualify enums, replace exec_())
