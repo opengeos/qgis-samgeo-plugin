@@ -37,6 +37,8 @@ from qgis.core import (
     QgsWkbTypes,
     Qgis,
     QgsMessageLog,
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
 )
 
 # Import the map tools
@@ -1473,6 +1475,91 @@ class SamGeoPlugin:
         finally:
             self.progress_bar.setVisible(False)
 
+    def _point_to_pixel(self, point):
+        """Convert a map-coordinate point in the raster layer CRS to pixel coordinates."""
+        if self.current_layer is None:
+            raise ValueError("Please set an image first.")
+
+        extent = self.current_layer.extent()
+        width = self.current_layer.width()
+        height = self.current_layer.height()
+
+        px = (point.x() - extent.xMinimum()) / extent.width() * width
+        py = (extent.yMaximum() - point.y()) / extent.height() * height
+        return [px, py]
+
+    def _vector_layer_to_pixel_points(self, layer, source_crs=None):
+        """Extract point features from a vector layer as raster pixel coordinates.
+
+        SamGeo's batch method can transform vector/map coordinates to pixel
+        coordinates with rasterio/PROJ, but QGIS plugin environments sometimes
+        lack a rasterio PROJ database context. Converting through QGIS first
+        avoids that dependency and passes pixel coordinates directly to SamGeo.
+        """
+        if self.current_layer is None:
+            raise ValueError("Please set an image first.")
+
+        raster_crs = self.current_layer.crs()
+        vector_crs = source_crs or layer.crs()
+
+        if not vector_crs.isValid():
+            raise ValueError(
+                "Point layer CRS is unknown. Please enter a valid CRS, e.g., EPSG:4326."
+            )
+
+        transform = None
+        if raster_crs.isValid() and vector_crs.isValid() and vector_crs != raster_crs:
+            transform = QgsCoordinateTransform(
+                vector_crs, raster_crs, QgsProject.instance()
+            )
+
+        pixel_points = []
+        skipped = 0
+        for feature in layer.getFeatures():
+            geom = feature.geometry()
+            if geom is None or geom.isEmpty():
+                skipped += 1
+                continue
+
+            points = []
+            if QgsWkbTypes.isMultiType(geom.wkbType()):
+                points = geom.asMultiPoint()
+            else:
+                points = [geom.asPoint()]
+
+            for point in points:
+                try:
+                    if transform is not None:
+                        point = transform.transform(point)
+                    px, py = self._point_to_pixel(point)
+                    if (
+                        0 <= px < self.current_layer.width()
+                        and 0 <= py < self.current_layer.height()
+                    ):
+                        pixel_points.append([px, py])
+                    else:
+                        skipped += 1
+                except Exception as exc:
+                    skipped += 1
+                    self.log_message(
+                        f"Skipped point feature {feature.id()}: {exc}",
+                        level=Qgis.MessageLevel.Warning,
+                    )
+
+        if not pixel_points:
+            raise ValueError(
+                "No valid point features fall within the current image extent. "
+                "Check the point layer CRS and image extent."
+            )
+
+        if skipped:
+            self.log_message(
+                f"Skipped {skipped} point(s) outside the image extent or with invalid geometry.",
+                level=Qgis.MessageLevel.Warning,
+            )
+
+        return pixel_points
+
     def segment_by_points_batch(self):
         """Segment using batch point prompts from interactive points or vector file/layer."""
         if self.sam is None:
@@ -1505,22 +1592,35 @@ class SamGeoPlugin:
             point_crs = None  # Already in pixel coordinates
             source_description = f"{len(self.batch_point_coords)} interactive points"
         else:
-            # Check if a layer is selected
+            # Convert file/layer point coordinates to raster pixel coordinates using
+            # QGIS CRS transforms, then pass pixel coordinates directly to SamGeo.
+            # This avoids rasterio/PROJ failures in QGIS Python environments.
+            crs_text = self.point_crs_edit.text().strip()
+            source_crs = None
+            if crs_text:
+                source_crs = QgsCoordinateReferenceSystem(crs_text)
+                if not source_crs.isValid():
+                    self.show_error(f"Invalid point CRS: {crs_text}")
+                    return
+
+            layer = None
             layer_id = self.vector_layer_combo.currentData()
             if layer_id:
                 layer = QgsProject.instance().mapLayer(layer_id)
                 if layer and layer.isValid():
-                    point_source = layer.source()
                     source_description = layer.name()
-                    # Get CRS from layer
-                    if layer.crs().isValid():
-                        point_crs = layer.crs().authid()
+                else:
+                    layer = None
 
-            # If no layer, check for file path
-            if point_source is None:
+            if layer is None:
                 vector_file = self.vector_file_edit.text().strip()
                 if vector_file and os.path.exists(vector_file):
-                    point_source = vector_file
+                    layer = QgsVectorLayer(
+                        vector_file, os.path.basename(vector_file), "ogr"
+                    )
+                    if not layer.isValid():
+                        self.show_error(f"Could not load vector file: {vector_file}")
+                        return
                     source_description = os.path.basename(vector_file)
                 else:
                     self.show_error(
@@ -1528,10 +1628,12 @@ class SamGeoPlugin:
                     )
                     return
 
-            # Get CRS from input field if specified
-            crs_text = self.point_crs_edit.text().strip()
-            if crs_text:
-                point_crs = crs_text
+            try:
+                point_source = self._vector_layer_to_pixel_points(layer, source_crs)
+                point_crs = None  # Converted to pixel coordinates already.
+            except Exception as exc:
+                self.show_error(f"Could not prepare point layer: {exc}")
+                return
 
         # Get output path
         output_path = self.batch_output_edit.text().strip()
