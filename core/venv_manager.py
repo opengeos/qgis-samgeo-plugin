@@ -733,6 +733,73 @@ def venv_exists(venv_dir: str = None) -> bool:
     return os.path.exists(python_path)
 
 
+_OPENMP_RUNTIME_NAMES = ("libomp.dylib", "libiomp5.dylib", "libgomp.1.dylib")
+
+
+def _loaded_openmp_runtimes() -> List[str]:
+    """List the OpenMP runtimes already loaded into this macOS process.
+
+    Uses dyld's image list, so nothing new is loaded.
+
+    Returns:
+        Paths of loaded images whose file name is a known OpenMP runtime.
+        Empty when the list cannot be read.
+    """
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        libc._dyld_image_count.restype = ctypes.c_uint32
+        libc._dyld_get_image_name.restype = ctypes.c_char_p
+        libc._dyld_get_image_name.argtypes = [ctypes.c_uint32]
+        loaded = []
+        for index in range(libc._dyld_image_count()):
+            name = libc._dyld_get_image_name(index)
+            if not name:
+                continue
+            path = name.decode("utf-8", "replace")
+            if os.path.basename(path) in _OPENMP_RUNTIME_NAMES:
+                loaded.append(path)
+        return loaded
+    except Exception:
+        return []
+
+
+def _configure_duplicate_openmp_runtime() -> None:
+    """Let the venv's PyTorch run next to an OpenMP runtime QGIS loaded.
+
+    PyTorch wheels for macOS ship their own ``libomp.dylib``. When QGIS has
+    already loaded another OpenMP runtime (conda-forge QGIS does), importing
+    torch aborts QGIS with "OMP: Error #15". Allowing the duplicate with
+    ``KMP_DUPLICATE_LIB_OK=TRUE`` gets past the import, but SamGeo runs
+    inference inside the QGIS process, and the first multithreaded torch op
+    then segfaults with several runtimes loaded. Limiting OpenMP to one
+    thread (``OMP_NUM_THREADS=1``) avoids that.
+
+    Both variables are set only when another runtime is already loaded, and
+    each only when the user has not set it. LLVM and Intel document two
+    OpenMP runtimes in one process as unsupported; the alternative here is
+    QGIS crashing. CPU inference is slower with one OpenMP thread; GPU (MPS)
+    work is not affected. Only runtimes loaded when this runs are seen.
+    """
+    loaded = _loaded_openmp_runtimes()
+    if not loaded:
+        return
+    changed = []
+    for name, value in (("KMP_DUPLICATE_LIB_OK", "TRUE"), ("OMP_NUM_THREADS", "1")):
+        if not os.environ.get(name):
+            os.environ[name] = value
+            changed.append(f"{name}={value}")
+    if changed:
+        _log(
+            "QGIS already loaded an OpenMP runtime ({}); set {} so PyTorch "
+            "can run inside QGIS instead of crashing it".format(
+                ", ".join(loaded), " and ".join(changed)
+            ),
+            Qgis.MessageLevel.Warning,
+        )
+
+
 def ensure_venv_packages_available() -> bool:
     """Add the venv site-packages to sys.path so packages can be imported.
 
@@ -763,6 +830,11 @@ def ensure_venv_packages_available() -> bool:
     # On Windows, register DLL directories for native packages (torch, etc.)
     if sys.platform == "win32":
         _add_windows_dll_directories(site_packages)
+
+    # On macOS, the venv's torch bundles its own libomp. Must run before
+    # torch is imported into the QGIS process.
+    if sys.platform == "darwin":
+        _configure_duplicate_openmp_runtime()
 
     # Fix stale typing_extensions (QGIS may load old version missing TypeIs)
     if "typing_extensions" in sys.modules:
