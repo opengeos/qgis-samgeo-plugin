@@ -194,3 +194,33 @@ def test_failed_tile_messages():
     assert pu.failed_tile_messages("Saved mask to out.tif\n") == []
     assert pu.failed_tile_messages("") == []
     assert pu.failed_tile_messages(None) == []
+
+
+def test_strip_prefix_python38_compatible():
+    logs = "Warning: Failed to process tile 3: boom\nok\nFailed to process tile 4"
+    assert pu.failed_tile_messages(logs) == [
+        "Failed to process tile 3: boom",
+        "Failed to process tile 4",
+    ]
+
+
+def test_north_up_round_trip():
+    gt = pu.geotransform_from_extent(100.0, 50.0, 20.0, 10.0, 200, 100)
+    inv = pu.invert_geotransform(gt)
+    assert pu.map_to_pixel(inv, 100.0, 50.0) == pytest.approx([0, 0])
+    assert pu.map_to_pixel(inv, 110.0, 45.0) == pytest.approx([100, 50])
+    assert pu.rect_to_pixel_box(inv, 102.0, 41.0, 104.0, 49.0) == pytest.approx(
+        [20, 10, 40, 90]
+    )
+
+
+def test_rotated_geotransform():
+    # x = col + row, y = -row: the case extent scaling gets wrong
+    inv = pu.invert_geotransform((0.0, 1.0, 1.0, 0.0, 0.0, -1.0))
+    assert pu.map_to_pixel(inv, 60.0, -20.0) == pytest.approx([40, 20])
+    assert pu.map_to_pixel(inv, 60.0, -40.0) == pytest.approx([20, 40])
+
+
+def test_singular_geotransform_raises():
+    with pytest.raises(ValueError):
+        pu.invert_geotransform((0.0, 1.0, 2.0, 0.0, 2.0, 4.0))
