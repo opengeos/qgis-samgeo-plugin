@@ -1197,6 +1197,7 @@ class SamGeoPlugin:
             self.current_layer = layer
             self.current_image_path = source
             self.image_needs_reset = False
+            self._clear_mask_result()
 
             self.image_status.setText(f"Image: {layer.name()}")
             self.image_status.setStyleSheet("color: green;")
@@ -1230,6 +1231,7 @@ class SamGeoPlugin:
             self.sam.set_image(file_path)
             self.current_image_path = file_path
             self.image_needs_reset = False
+            self._clear_mask_result()
             self.current_layer = None
 
             self.image_status.setText(f"Image: {os.path.basename(file_path)}")
@@ -2237,6 +2239,18 @@ class SamGeoPlugin:
         """
         self.last_prompt_type = prompt_type
         self.mask_source_path = self.current_image_path
+
+    def _clear_mask_result(self):
+        """Drop masks left over from the previous image.
+
+        ``set_image`` does not clear the model's masks, but it does change
+        the georeference that ``save_masks`` writes them with, so saving them
+        after a new image is set would misplace and mislabel them.
+        """
+        if self.sam is not None and hasattr(self.sam, "masks"):
+            self.sam.masks = None
+        self.last_prompt_type = None
+        self.mask_source_path = None
 
     def _write_masks(self):
         """Write the current masks using the Output tab settings.
