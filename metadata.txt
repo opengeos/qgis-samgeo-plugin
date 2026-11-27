@@ -27,6 +27,8 @@ changelog=
         - Clicks, boxes and batch points use the raster's geotransform, so
           rotated or sheared rasters map to the right pixels
         - Python 3.8 compatibility for older QGIS 3.22 builds
+        - Fix macOS QGIS crashing on load when QGIS already loaded an OpenMP
+          runtime (conda-forge QGIS)
         - Vector output works with rasterio < 1.5 (QGIS builds with an older
           Python); requires segment-geospatial >= 1.6.0 for tiled vector output
     1.5.0 - Model weights, mask attributes and tiled segmentation
