@@ -91,8 +91,11 @@ class SamGeoPlugin:
         self.sam = None
         self.current_layer = None
         self.current_image_path = None
-        # Prompt type of the current masks, written to the ``prompt`` field
+        # Prompt type and source image of the current masks, written to the
+        # ``prompt`` and ``source`` fields. Recorded only after a successful
+        # segmentation so a failed run or a new image does not relabel them.
         self.last_prompt_type = None
+        self.mask_source_path = None
 
         # Point and box prompts
         self.point_coords = []
@@ -1001,11 +1004,12 @@ class SamGeoPlugin:
 
         start_path = self.output_path_edit.text().strip()
         if not start_path:
+            source = self.mask_source_path or self.current_image_path
             start_path = default_output_path(
-                self.current_image_path,
+                source,
                 self.last_prompt_type,
                 output_extension(format_text),
-            ) or source_directory(self.current_image_path)
+            ) or source_directory(source)
 
         file_path, _ = QFileDialog.getSaveFileName(
             self.iface.mainWindow(), "Save Output", start_path, filter_str
@@ -1202,8 +1206,8 @@ class SamGeoPlugin:
                 self.max_size_spin.value() if self.max_size_spin.value() > 0 else None
             )
 
-            self.last_prompt_type = PROMPT_TEXT
             self.sam.generate_masks(prompt, min_size=min_size, max_size=max_size)
+            self._record_mask_result(PROMPT_TEXT)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
             self.results_text.setText(
@@ -1372,7 +1376,6 @@ class SamGeoPlugin:
             point_coords = np.array(self.point_coords)
             point_labels = np.array(self.point_labels)
 
-            self.last_prompt_type = PROMPT_POINT
             # Use appropriate method based on model type
             if hasattr(self.sam, "generate_masks_by_points"):
                 self.sam.generate_masks_by_points(
@@ -1385,6 +1388,7 @@ class SamGeoPlugin:
                     point_coords=point_coords,
                     point_labels=point_labels,
                 )
+            self._record_mask_result(PROMPT_POINT)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
             self.results_text.setText(
@@ -1486,7 +1490,6 @@ class SamGeoPlugin:
             self.box_status_label.setStyleSheet("color: orange;")
             QCoreApplication.processEvents()
 
-            self.last_prompt_type = PROMPT_BOX
             # Use appropriate method based on model type
             if hasattr(self.sam, "generate_masks_by_boxes"):
                 self.sam.generate_masks_by_boxes(boxes=[self.box_coords])
@@ -1495,6 +1498,7 @@ class SamGeoPlugin:
                 import numpy as np
 
                 self.sam.predict(box=np.array(self.box_coords))
+            self._record_mask_result(PROMPT_BOX)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
             self.results_text.setText(
@@ -1717,7 +1721,6 @@ class SamGeoPlugin:
             unique = self.batch_unique_check.isChecked()
 
             # Run batch segmentation
-            self.last_prompt_type = PROMPT_BATCH_POINT
             self.sam.generate_masks_by_points_patch(
                 point_coords_batch=point_source,
                 point_crs=point_crs,
@@ -1726,6 +1729,7 @@ class SamGeoPlugin:
                 min_size=min_size,
                 max_size=max_size,
             )
+            self._record_mask_result(PROMPT_BATCH_POINT)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
 
@@ -1827,9 +1831,11 @@ class SamGeoPlugin:
         extension = output_extension(format_text)
         if self.save_to_source_dir_check.isChecked():
             suggested = default_output_path(
-                self.current_image_path, self.last_prompt_type, extension
+                self.mask_source_path or self.current_image_path,
+                self.last_prompt_type,
+                extension,
             )
-            if suggested and os.access(os.path.dirname(suggested), os.W_OK):
+            if suggested and self._dir_is_writable(os.path.dirname(suggested)):
                 return suggested, False
             self.log_message(
                 "Source image folder is unknown or not writable; "
@@ -1844,6 +1850,40 @@ class SamGeoPlugin:
         output_path = temp_file.name
         temp_file.close()
         return output_path, True
+
+    @staticmethod
+    def _dir_is_writable(directory):
+        """Return True if a file can actually be created in a directory.
+
+        ``os.access`` is unreliable for this on Windows, where it ignores
+        ACLs, so this creates and removes a temporary file instead.
+
+        Args:
+            directory: Directory to test.
+
+        Returns:
+            True if a file could be created there.
+        """
+        import tempfile
+
+        try:
+            with tempfile.TemporaryFile(dir=directory):
+                pass
+        except OSError:
+            return False
+        return True
+
+    def _record_mask_result(self, prompt_type):
+        """Remember how the current masks were made.
+
+        Called right after a segmentation call returns, so the ``prompt`` and
+        ``source`` fields describe the masks actually being saved.
+
+        Args:
+            prompt_type: Prompt type, e.g. ``"text"`` or ``"box"``.
+        """
+        self.last_prompt_type = prompt_type
+        self.mask_source_path = self.current_image_path
 
     def _write_masks(self):
         """Write the current masks using the Output tab settings.
@@ -1920,7 +1960,9 @@ class SamGeoPlugin:
             return
         provider = layer.dataProvider()
 
-        attrs = mask_attributes(self.current_image_path, self.last_prompt_type)
+        attrs = mask_attributes(
+            self.mask_source_path or self.current_image_path, self.last_prompt_type
+        )
         new_fields = [
             QgsField(name, QVariant.String, "", 254)
             for name in (SOURCE_FIELD, PROMPT_FIELD)
