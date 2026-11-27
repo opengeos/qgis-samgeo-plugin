@@ -138,11 +138,17 @@ qgis
    - **SamGeo3 (SAM3)**: Latest version with text prompts support
    - **SamGeo2 (SAM2)**: Second generation SAM
    - **SamGeo (SAM1)**: Original SAM model
-2. Choose the backend (meta or transformers)
-3. Select the device (auto, cuda, or cpu)
-4. Set the confidence threshold (default: 0.5)
-5. Enable interactive mode if you want to use point/box prompts
-6. Click **Load Model**
+2. Pick the model weights. The list follows the selected version:
+   - SAM3: `facebook/sam3` (default) or `facebook/sam3.1` (meta backend only)
+   - SAM2: hiera-large (default), base-plus, small or tiny
+   - SAM1: ViT-H (default), ViT-L or ViT-B
+
+   Smaller weights load faster and need less memory, at some cost in accuracy.
+3. Choose the backend (meta or transformers)
+4. Select the device (auto, cuda, or cpu)
+5. Set the confidence threshold (default: 0.5)
+6. Enable interactive mode if you want to use point/box prompts
+7. Click **Load Model**
 
    ![](https://github.com/user-attachments/assets/f1e4e356-e460-4d94-83ec-1f596d65156e)
 
@@ -198,8 +204,15 @@ Each point generates a separate mask, making this efficient for segmenting many 
 #### 4. Save Results (Output tab)
 
 1. Choose output format (vector or raster)
-2. Set the output file path
+2. Set the output file path. The file dialog opens in the source image's folder with a suggested name such as `scene_text_masks.gpkg`. If you leave the path empty, the masks go to a temporary file, or, with **Save next to source image when no path is set** checked, to a new file in the source image's folder (existing files are never overwritten)
 3. Click **Save Masks**
+
+Vector outputs (GeoPackage or Shapefile) carry these attributes for each mask:
+
+- `value`: the mask ID from the raster
+- `source`: file name of the segmented image
+- `prompt`: the prompt type that produced the mask (`text`, `point`, `box` or `batch_point`)
+- `score`: the model's confidence score (segment-geospatial 1.4.2 or later)
 
    ![](https://github.com/user-attachments/assets/84d00598-56a2-42c3-8cea-bfbf739c4e65)
 
