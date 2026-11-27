@@ -43,6 +43,7 @@ from qgis.core import (
 
 # Import the map tools
 from .map_tools import PointPromptTool, BoxPromptTool
+from . import plugin_utils
 from .plugin_utils import (
     PROMPT_BATCH_POINT,
     PROMPT_BOX,
@@ -1625,13 +1626,7 @@ class SamGeoPlugin:
         """Add a point prompt."""
         # Convert map coordinates to pixel coordinates
         if self.current_layer is not None:
-            extent = self.current_layer.extent()
-            width = self.current_layer.width()
-            height = self.current_layer.height()
-
-            # Calculate pixel coordinates
-            px = (point.x() - extent.xMinimum()) / extent.width() * width
-            py = (extent.yMaximum() - point.y()) / extent.height() * height
+            px, py = self._point_to_pixel(point)
 
             self.point_coords.append([px, py])
             self.point_labels.append(1 if foreground else 0)
@@ -1671,13 +1666,7 @@ class SamGeoPlugin:
     def add_batch_point(self, point):
         """Add a batch point prompt."""
         if self.current_layer is not None:
-            extent = self.current_layer.extent()
-            width = self.current_layer.width()
-            height = self.current_layer.height()
-
-            # Calculate pixel coordinates
-            px = (point.x() - extent.xMinimum()) / extent.width() * width
-            py = (extent.yMaximum() - point.y()) / extent.height() * height
+            px, py = self._point_to_pixel(point)
 
             self.batch_point_coords.append([px, py])
             self.batch_point_coords_map.append([point.x(), point.y()])
@@ -1802,15 +1791,13 @@ class SamGeoPlugin:
     def set_box(self, rect):
         """Set the box prompt from a rectangle."""
         if self.current_layer is not None:
-            extent = self.current_layer.extent()
-            width = self.current_layer.width()
-            height = self.current_layer.height()
-
-            # Convert to pixel coordinates
-            x1 = (rect.xMinimum() - extent.xMinimum()) / extent.width() * width
-            y1 = (extent.yMaximum() - rect.yMaximum()) / extent.height() * height
-            x2 = (rect.xMaximum() - extent.xMinimum()) / extent.width() * width
-            y2 = (extent.yMaximum() - rect.yMinimum()) / extent.height() * height
+            x1, y1, x2, y2 = plugin_utils.rect_to_pixel_box(
+                self._inverse_geotransform(),
+                rect.xMinimum(),
+                rect.yMinimum(),
+                rect.xMaximum(),
+                rect.yMaximum(),
+            )
 
             self.box_coords = [x1, y1, x2, y2]
             self.box_label.setText(f"Box: ({x1:.1f}, {y1:.1f}) - ({x2:.1f}, {y2:.1f})")
@@ -1892,18 +1879,56 @@ class SamGeoPlugin:
         finally:
             self.progress_bar.setVisible(False)
 
+    def _inverse_geotransform(self):
+        """Return the inverse geotransform of the current raster layer.
+
+        The raster's own geotransform is read with GDAL (bundled with QGIS),
+        so rotated or sheared rasters map correctly. If it cannot be read, a
+        north-up transform is built from the layer extent. The result is
+        cached per layer.
+
+        Returns:
+            A 6-tuple inverse geotransform.
+        """
+        layer = self.current_layer
+        if layer is None:
+            raise ValueError("Please set an image first.")
+        cache = getattr(self, "_inv_gt_cache", None)
+        if cache is not None and cache[0] == layer.id():
+            return cache[1]
+
+        gt = None
+        try:
+            from osgeo import gdal
+
+            # SamGeo reads the file itself, so use the file's own pixel grid
+            # (QGIS displays rotated rasters through a warped north-up view
+            # whose size differs from the file's).
+            ds = gdal.Open(layer.source())
+            if ds is not None:
+                gt = ds.GetGeoTransform(can_return_null=True)
+            ds = None
+        except Exception:  # fall back to the layer extent below
+            gt = None
+        if not gt:
+            extent = layer.extent()
+            gt = plugin_utils.geotransform_from_extent(
+                extent.xMinimum(),
+                extent.yMaximum(),
+                extent.width(),
+                extent.height(),
+                layer.width(),
+                layer.height(),
+            )
+        inv = plugin_utils.invert_geotransform(gt)
+        self._inv_gt_cache = (layer.id(), inv)
+        return inv
+
     def _point_to_pixel(self, point):
         """Convert a map-coordinate point in the raster layer CRS to pixel coordinates."""
-        if self.current_layer is None:
-            raise ValueError("Please set an image first.")
-
-        extent = self.current_layer.extent()
-        width = self.current_layer.width()
-        height = self.current_layer.height()
-
-        px = (point.x() - extent.xMinimum()) / extent.width() * width
-        py = (extent.yMaximum() - point.y()) / extent.height() * height
-        return [px, py]
+        return plugin_utils.map_to_pixel(
+            self._inverse_geotransform(), point.x(), point.y()
+        )
 
     def _vector_layer_to_pixel_points(self, layer, source_crs=None):
         """Extract point features from a vector layer as raster pixel coordinates.
