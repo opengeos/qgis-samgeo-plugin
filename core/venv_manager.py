@@ -735,16 +735,25 @@ def venv_exists(venv_dir: str = None) -> bool:
 
 _OPENMP_RUNTIME_NAMES = ("libomp.dylib", "libiomp5.dylib", "libgomp.1.dylib")
 
+# LLVM/Intel OpenMP DLLs on Windows. MSVC's vcomp*.dll is a different
+# runtime that doesn't trigger the duplicate-runtime abort, so it is left out.
+_OPENMP_RUNTIME_DLLS = ("libiomp5md.dll", "libomp.dll", "libomp140.x86_64.dll")
+
 
 def _loaded_openmp_runtimes() -> List[str]:
-    """List the OpenMP runtimes already loaded into this macOS process.
+    """List the OpenMP runtimes already loaded into this process.
 
-    Uses dyld's image list, so nothing new is loaded.
+    Reads the loader's module list (dyld on macOS, the process module list
+    on Windows), so nothing new is loaded.
 
     Returns:
-        Paths of loaded images whose file name is a known OpenMP runtime.
-        Empty when the list cannot be read.
+        Paths of loaded modules whose file name is a known OpenMP runtime.
+        Empty when the list cannot be read or on other platforms.
     """
+    if sys.platform == "win32":
+        return _loaded_windows_openmp_dlls()
+    if sys.platform != "darwin":
+        return []
     try:
         import ctypes
 
@@ -765,12 +774,70 @@ def _loaded_openmp_runtimes() -> List[str]:
         return []
 
 
+def _loaded_windows_openmp_dlls() -> List[str]:
+    """List the LLVM/Intel OpenMP DLLs loaded into this Windows process.
+
+    Returns:
+        Paths of loaded DLLs whose file name is a known OpenMP runtime.
+        Empty when the module list cannot be read.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi.EnumProcessModules.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.HMODULE),
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        psapi.EnumProcessModules.restype = wintypes.BOOL
+        psapi.GetModuleFileNameExW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HMODULE,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+        ]
+        psapi.GetModuleFileNameExW.restype = wintypes.DWORD
+
+        process = kernel32.GetCurrentProcess()
+        needed = wintypes.DWORD()
+        count = 1024
+        while True:
+            modules = (wintypes.HMODULE * count)()
+            if not psapi.EnumProcessModules(
+                process, modules, ctypes.sizeof(modules), ctypes.byref(needed)
+            ):
+                return []
+            if needed.value <= ctypes.sizeof(modules):
+                break
+            count = needed.value // ctypes.sizeof(wintypes.HMODULE) + 16
+
+        loaded = []
+        buffer = ctypes.create_unicode_buffer(32768)
+        for index in range(needed.value // ctypes.sizeof(wintypes.HMODULE)):
+            if not psapi.GetModuleFileNameExW(
+                process, modules[index], buffer, len(buffer)
+            ):
+                continue
+            path = buffer.value
+            if os.path.basename(path).lower() in _OPENMP_RUNTIME_DLLS:
+                loaded.append(path)
+        return loaded
+    except Exception:
+        return []
+
+
 def _configure_duplicate_openmp_runtime() -> None:
     """Let the venv's PyTorch run next to an OpenMP runtime QGIS loaded.
 
-    PyTorch wheels for macOS ship their own ``libomp.dylib``. When QGIS has
-    already loaded another OpenMP runtime (conda-forge QGIS does), importing
-    torch aborts QGIS with "OMP: Error #15". Allowing the duplicate with
+    PyTorch wheels for macOS and Windows ship their own OpenMP runtime
+    (``libomp.dylib`` / ``libomp.dll``). When QGIS has already loaded another
+    one (conda-forge QGIS loads libomp on macOS and Intel's libiomp5md.dll on
+    Windows), importing torch aborts QGIS with "OMP: Error #15". Allowing the duplicate with
     ``KMP_DUPLICATE_LIB_OK=TRUE`` gets past the import, but SamGeo runs
     inference inside the QGIS process, and the first multithreaded torch op
     then segfaults with several runtimes loaded. Limiting OpenMP to one
@@ -831,9 +898,9 @@ def ensure_venv_packages_available() -> bool:
     if sys.platform == "win32":
         _add_windows_dll_directories(site_packages)
 
-    # On macOS, the venv's torch bundles its own libomp. Must run before
-    # torch is imported into the QGIS process.
-    if sys.platform == "darwin":
+    # On macOS and Windows, the venv's torch bundles its own OpenMP
+    # runtime. Must run before torch is imported into the QGIS process.
+    if sys.platform in ("darwin", "win32"):
         _configure_duplicate_openmp_runtime()
 
     # Fix stale typing_extensions (QGIS may load old version missing TypeIs)
