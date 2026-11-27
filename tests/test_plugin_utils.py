@@ -224,3 +224,8 @@ def test_rotated_geotransform():
 def test_singular_geotransform_raises():
     with pytest.raises(ValueError):
         pu.invert_geotransform((0.0, 1.0, 2.0, 0.0, 2.0, 4.0))
+
+
+def test_layer_file_path_strips_provider_options():
+    assert pu.layer_file_path("/data/my image.tif|layername=a") == "/data/my image.tif"
+    assert pu.layer_file_path("C:\\data\\img.tif") == "C:\\data\\img.tif"
