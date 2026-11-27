@@ -237,3 +237,83 @@ def default_output_path(source_path, prompt_type, extension, ensure_unique=True)
             candidate = f"{base}_{index}{extension}"
             index += 1
     return candidate
+
+
+# Tiled text segmentation limits (pixels / percent).
+TILE_SIZE_DEFAULT = 1024
+TILE_OVERLAP_DEFAULT = 128
+SCALE_MIN = 10
+SCALE_MAX = 200
+
+
+def is_geotiff(path):
+    """Return True if a path looks like a GeoTIFF file.
+
+    ``SamGeo3.generate_masks_tiled`` only accepts ``.tif``/``.tiff`` files.
+
+    Args:
+        path: File path, or None.
+
+    Returns:
+        True for a ``.tif`` or ``.tiff`` extension (any case).
+    """
+    if not path:
+        return False
+    return str(path).split("|", 1)[0].strip().lower().endswith((".tif", ".tiff"))
+
+
+def validate_tile_settings(tile_size, overlap, scale=100):
+    """Check tiled-mode settings before running a long job.
+
+    Args:
+        tile_size: Tile edge length in pixels.
+        overlap: Overlap between neighboring tiles in pixels.
+        scale: Processing scale in percent of the native resolution.
+
+    Returns:
+        An error message, or None when the settings are valid.
+    """
+    if tile_size <= 0:
+        return "Tile size must be positive."
+    if overlap < 0:
+        return "Tile overlap cannot be negative."
+    if tile_size <= overlap:
+        return "Tile size must be greater than the tile overlap."
+    if not SCALE_MIN <= scale <= SCALE_MAX:
+        return f"Processing scale must be between {SCALE_MIN}% and {SCALE_MAX}%."
+    return None
+
+
+def tile_count(width, height, tile_size, overlap):
+    """Return how many tiles ``generate_masks_tiled`` processes for an image.
+
+    Mirrors the tiling formula in ``SamGeo3.generate_masks_tiled``.
+
+    Args:
+        width: Image width in pixels.
+        height: Image height in pixels.
+        tile_size: Tile edge length in pixels.
+        overlap: Overlap between neighboring tiles in pixels.
+
+    Returns:
+        The number of tiles (at least 1).
+    """
+    step = tile_size - overlap
+    n_x = max(1, (width - overlap + step - 1) // step)
+    n_y = max(1, (height - overlap + step - 1) // step)
+    return n_x * n_y
+
+
+def scaled_size(width, height, scale):
+    """Return the image size after resampling to a processing scale.
+
+    Args:
+        width: Image width in pixels.
+        height: Image height in pixels.
+        scale: Processing scale in percent of the native resolution.
+
+    Returns:
+        A ``(width, height)`` tuple, each at least 1 pixel.
+    """
+    factor = scale / 100.0
+    return max(1, round(width * factor)), max(1, round(height * factor))

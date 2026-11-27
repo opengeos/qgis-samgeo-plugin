@@ -170,6 +170,16 @@ qgis
 
    ![](https://github.com/user-attachments/assets/37012722-e1aa-4abe-9b25-8955064cfd8d)
 
+##### Large images: tiled text segmentation (Text tab)
+
+SAM works best on image patches of about a thousand pixels, so a text prompt over a full scene often misses objects. For large GeoTIFFs, check **Tiled mode for large images** (SamGeo3 only):
+
+1. Set the **Tile size** (default 1024 px) and **Overlap** (default 128 px). More overlap merges objects that cross tile edges better but takes longer
+2. Optionally change the **Processing scale**. Below 100% segments a coarser copy of the image (faster, suits large objects); above 100% an upsampled copy (slower, can help with small objects). The mask keeps the processing resolution
+3. Click **Segment by Text**
+
+Tiled mode reads the file directly, so you do not need to click **Set Image from Layer** or **Set Image from File** first; it uses the current image, else the selected raster layer, else the image file on the Model tab. The merged result is saved right away with the Output tab settings (format, path, unique values, add to map). Afterwards set the image again before using point or box prompts.
+
 ##### Point-Based Segmentation (Interactive tab)
 
 1. Click **Add Foreground Points** and click on objects to include
@@ -272,7 +282,7 @@ common.raster_to_vector("buildings.tif", "buildings.gpkg")
 ### Segmentation is slow
 
 - Use a GPU if available (select "cuda" device)
-- Reduce image resolution before processing
+- Use tiled mode with a processing scale below 100% for large images
 - Use the transformers backend which may be faster for some tasks
 
 ### No objects found

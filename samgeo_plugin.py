@@ -49,14 +49,22 @@ from .plugin_utils import (
     PROMPT_FIELD,
     PROMPT_POINT,
     PROMPT_TEXT,
+    SCALE_MAX,
+    SCALE_MIN,
     SOURCE_FIELD,
+    TILE_OVERLAP_DEFAULT,
+    TILE_SIZE_DEFAULT,
     default_output_path,
+    is_geotiff,
     mask_attributes,
     model_constructor_kwargs,
     model_family,
     model_weight_options,
     output_extension,
+    scaled_size,
     source_directory,
+    tile_count,
+    validate_tile_settings,
 )
 
 TOOLBAR_OBJECT_NAME = "SamGeo"
@@ -617,6 +625,65 @@ class SamGeoPlugin:
         self.max_size_spin.setSpecialValueText("No limit")
         size_row.addWidget(self.max_size_spin)
         text_group_layout.addLayout(size_row)
+
+        # Tiled mode for large images
+        self.tiled_check = QCheckBox("Tiled mode for large images")
+        self.tiled_check.setChecked(False)
+        self.tiled_check.setToolTip(
+            "Split the image into overlapping tiles, segment each tile with\n"
+            "the text prompt and merge the results (SamGeo3, GeoTIFF only).\n"
+            "SAM works best on image patches of about 1000 pixels, so this\n"
+            "gives better results on full scenes. Setting the image first is\n"
+            "not required; the result is saved using the Output tab settings."
+        )
+        text_group_layout.addWidget(self.tiled_check)
+
+        self.tiled_options = QWidget()
+        tiled_layout = QVBoxLayout()
+        tiled_layout.setContentsMargins(0, 0, 0, 0)
+        self.tiled_options.setLayout(tiled_layout)
+
+        tile_row = QHBoxLayout()
+        tile_row.addWidget(QLabel("Tile size:"))
+        self.tile_size_spin = QSpinBox()
+        self.tile_size_spin.setRange(256, 8192)
+        self.tile_size_spin.setSingleStep(128)
+        self.tile_size_spin.setValue(TILE_SIZE_DEFAULT)
+        self.tile_size_spin.setSuffix(" px")
+        tile_row.addWidget(self.tile_size_spin)
+
+        tile_row.addWidget(QLabel("Overlap:"))
+        self.tile_overlap_spin = QSpinBox()
+        self.tile_overlap_spin.setRange(0, 4096)
+        self.tile_overlap_spin.setSingleStep(32)
+        self.tile_overlap_spin.setValue(TILE_OVERLAP_DEFAULT)
+        self.tile_overlap_spin.setSuffix(" px")
+        self.tile_overlap_spin.setToolTip(
+            "Overlap between neighboring tiles. More overlap merges objects\n"
+            "on tile edges better but takes longer."
+        )
+        tile_row.addWidget(self.tile_overlap_spin)
+        tiled_layout.addLayout(tile_row)
+
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(QLabel("Processing scale:"))
+        self.tile_scale_spin = QSpinBox()
+        self.tile_scale_spin.setRange(SCALE_MIN, SCALE_MAX)
+        self.tile_scale_spin.setSingleStep(10)
+        self.tile_scale_spin.setValue(100)
+        self.tile_scale_spin.setSuffix(" %")
+        self.tile_scale_spin.setToolTip(
+            "Resample the image before tiling. Below 100% processes a coarser\n"
+            "copy (faster, suits large objects); above 100% an upsampled one\n"
+            "(slower, can help with small objects). The mask keeps the\n"
+            "processing resolution."
+        )
+        scale_row.addWidget(self.tile_scale_spin)
+        tiled_layout.addLayout(scale_row)
+
+        self.tiled_options.setVisible(False)
+        self.tiled_check.toggled.connect(self.tiled_options.setVisible)
+        text_group_layout.addWidget(self.tiled_options)
 
         self.text_segment_btn = QPushButton("Segment by Text")
         self.text_segment_btn.clicked.connect(self.segment_by_text)
@@ -1181,6 +1248,10 @@ class SamGeoPlugin:
             self.show_error("Please load the model first.")
             return
 
+        if self.tiled_check.isChecked():
+            self.segment_by_text_tiled()
+            return
+
         if self.current_image_path is None:
             self.show_error("Please set an image first.")
             return
@@ -1239,6 +1310,237 @@ class SamGeoPlugin:
             self.show_error(f"Segmentation failed: {str(e)}")
 
         finally:
+            self.progress_bar.setVisible(False)
+
+    def _tiled_source_path(self):
+        """Return the raster path to use for tiled text segmentation.
+
+        Tiled mode reads the file directly, so the image does not have to be
+        set on the model first. The current image wins; otherwise the
+        selected raster layer, then the file path on the Model tab.
+
+        Returns:
+            The source path, or None if no usable file is selected.
+        """
+        if self.current_image_path and os.path.exists(self.current_image_path):
+            return self.current_image_path
+        layer_id = self.layer_combo.currentData()
+        if layer_id:
+            layer = QgsProject.instance().mapLayer(layer_id)
+            if layer is not None and os.path.exists(layer.source()):
+                return layer.source()
+        file_path = self.image_path_edit.text().strip()
+        if file_path and os.path.exists(file_path):
+            return file_path
+        return None
+
+    def _resample_for_tiling(self, source, scale):
+        """Write a resampled GeoTIFF copy of the source at a processing scale.
+
+        Args:
+            source: Path of the source GeoTIFF.
+            scale: Processing scale in percent of the native resolution.
+
+        Returns:
+            The path of the temporary resampled GeoTIFF.
+        """
+        import tempfile
+
+        from osgeo import gdal
+
+        temp_file = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+        output = temp_file.name
+        temp_file.close()
+        options = dict(
+            format="GTiff",
+            widthPct=scale,
+            heightPct=scale,
+            resampleAlg="average" if scale < 100 else "bilinear",
+            creationOptions=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER"],
+        )
+        # Raise GDAL errors as exceptions locally without changing the
+        # process-wide setting that QGIS and other plugins rely on.
+        if hasattr(gdal, "ExceptionMgr"):
+            with gdal.ExceptionMgr(useExceptions=True):
+                dataset = gdal.Translate(output, source, **options)
+        else:
+            dataset = gdal.Translate(output, source, **options)
+        if dataset is None:
+            raise RuntimeError(f"Could not resample {source} to {scale}%.")
+        dataset = None  # Close and flush to disk.
+        return output
+
+    def segment_by_text_tiled(self):
+        """Segment a large GeoTIFF with the text prompt, tile by tile.
+
+        Uses ``SamGeo3.generate_masks_tiled``, which writes the merged mask
+        raster directly, so the result is saved right away with the Output
+        tab settings instead of being kept for **Save Masks**.
+        """
+        if not hasattr(self.sam, "generate_masks_tiled"):
+            self.show_error(
+                "Tiled mode requires the SamGeo3 (SAM3) model and "
+                "segment-geospatial 1.2 or later."
+            )
+            return
+
+        prompt = self.text_prompt_edit.text().strip()
+        if not prompt:
+            self.show_error("Please enter a text prompt.")
+            return
+
+        source = self._tiled_source_path()
+        if source is None:
+            self.show_error(
+                "Please set an image, or select a raster layer or image file "
+                "on the Model tab."
+            )
+            return
+        if not is_geotiff(source):
+            self.show_error("Tiled mode needs a GeoTIFF (.tif or .tiff) image.")
+            return
+
+        tile_size = self.tile_size_spin.value()
+        overlap = self.tile_overlap_spin.value()
+        scale = self.tile_scale_spin.value()
+        error = validate_tile_settings(tile_size, overlap, scale)
+        if error:
+            self.show_error(error)
+            return
+
+        import tempfile
+
+        min_size = self.min_size_spin.value()
+        max_size = self.max_size_spin.value() or None
+        format_text = self.output_format_combo.currentText()
+        unique = self.unique_check.isChecked()
+        is_raster = "Raster" in format_text
+        image_was_set = self.current_image_path is not None
+        tiles_started = False
+        temp_files = []
+
+        try:
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setRange(0, 0)
+            self.text_status_label.setText("Processing tiles...")
+            self.text_status_label.setStyleSheet("color: orange;")
+            QCoreApplication.processEvents()
+
+            self.last_prompt_type = PROMPT_TEXT
+            work_source = source
+            n_tiles = None
+            source_layer = QgsRasterLayer(source, "samgeo_tiled_source")
+            if source_layer.isValid():
+                width, height = scaled_size(
+                    source_layer.width(), source_layer.height(), scale
+                )
+                n_tiles = tile_count(width, height, tile_size, overlap)
+            if scale != 100:
+                self.text_status_label.setText(f"Resampling image to {scale}%...")
+                QCoreApplication.processEvents()
+                work_source = self._resample_for_tiling(source, scale)
+                temp_files.append(work_source)
+
+            if n_tiles is not None:
+                self.text_status_label.setText(f"Processing {n_tiles} tile(s)...")
+                QCoreApplication.processEvents()
+
+            output_path, use_temp_file = self._resolve_output_path(format_text, source)
+            if is_raster:
+                raster_path = output_path
+            else:
+                temp_file = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+                raster_path = temp_file.name
+                temp_file.close()
+                temp_files.append(raster_path)
+
+            tiles_started = True
+            self.sam.generate_masks_tiled(
+                source=work_source,
+                prompt=prompt,
+                output=raster_path,
+                tile_size=tile_size,
+                overlap=overlap,
+                min_size=min_size,
+                max_size=max_size,
+                unique=unique,
+                verbose=False,
+            )
+
+            if not is_raster:
+                try:
+                    from ._samgeo_lib import get_samgeo
+                except ImportError:
+                    from _samgeo_lib import get_samgeo
+
+                get_samgeo().common.raster_to_vector(raster_path, output_path)
+                # Tiled masks have no per-mask scores.
+                self._attach_mask_attributes(output_path, None, source)
+                result_layer = QgsVectorLayer(
+                    output_path,
+                    "samgeo_masks" if use_temp_file else os.path.basename(output_path),
+                    "ogr",
+                )
+                num_objects = (
+                    result_layer.featureCount() if result_layer.isValid() else 0
+                )
+            else:
+                result_layer = QgsRasterLayer(
+                    output_path,
+                    "samgeo_masks" if use_temp_file else os.path.basename(output_path),
+                )
+                objects = getattr(self.sam, "objects", None)
+                num_objects = None
+                if objects is not None and unique:
+                    import numpy as np
+
+                    num_objects = int(np.count_nonzero(np.unique(objects)))
+
+            if self.add_to_map_check.isChecked() and result_layer.isValid():
+                QgsProject.instance().addMapLayer(result_layer)
+
+            found = "unknown" if num_objects is None else num_objects
+            lines = [
+                "Tiled Text Segmentation Results:",
+                f"Prompt: {prompt}",
+                f"Image: {os.path.basename(source)}",
+                f"Tile size: {tile_size}, overlap: {overlap}, scale: {scale}%",
+            ]
+            if n_tiles is not None:
+                lines.append(f"Tiles: {n_tiles}")
+            if not is_raster:
+                lines.append(f"Polygons: {found}")
+            else:
+                lines.append(f"Objects found: {found}")
+            lines.append(f"Saved to: {output_path}")
+            self.results_text.setText("\n".join(lines) + "\n")
+
+            self.text_status_label.setText(
+                f"Done. Saved to {os.path.basename(output_path)}"
+            )
+            self.text_status_label.setStyleSheet("color: green;")
+            self.log_message(f"Tiled text segmentation saved to: {output_path}")
+
+        except Exception as e:
+            self.text_status_label.setText("Segmentation failed!")
+            self.text_status_label.setStyleSheet("color: red;")
+            self.show_error(f"Tiled segmentation failed: {str(e)}")
+
+        finally:
+            for path in temp_files:
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+            # generate_masks_tiled replaces the model's image with the last
+            # tile, so point/box prompts need the image to be set again.
+            if image_was_set and tiles_started:
+                self.current_image_path = None
+                self.image_status.setText(
+                    "Image: set it again (tiled mode replaced it)"
+                )
+                self.image_status.setStyleSheet("color: orange;")
             self.progress_bar.setVisible(False)
 
     def start_point_tool(self, foreground=True):
@@ -1805,7 +2107,7 @@ class SamGeoPlugin:
             )
             self.show_error(f"Auto-show failed: {str(e)}")
 
-    def _resolve_output_path(self, format_text):
+    def _resolve_output_path(self, format_text, source_path=None):
         """Return the output path for the masks and whether it is temporary.
 
         Uses the Output tab path when set. Otherwise, if "Save next to source
@@ -1814,6 +2116,7 @@ class SamGeoPlugin:
 
         Args:
             format_text: Text of the output format combo.
+            source_path: Source raster path. Defaults to the current image.
 
         Returns:
             A ``(output_path, use_temp_file)`` tuple.
@@ -1827,7 +2130,9 @@ class SamGeoPlugin:
         extension = output_extension(format_text)
         if self.save_to_source_dir_check.isChecked():
             suggested = default_output_path(
-                self.current_image_path, self.last_prompt_type, extension
+                source_path or self.current_image_path,
+                self.last_prompt_type,
+                extension,
             )
             if suggested and os.access(os.path.dirname(suggested), os.W_OK):
                 return suggested, False
@@ -1899,7 +2204,7 @@ class SamGeoPlugin:
                 os.remove(temp_raster)
         return output_path
 
-    def _attach_mask_attributes(self, output_path, scores=None):
+    def _attach_mask_attributes(self, output_path, scores=None, source_path=None):
         """Write per-mask attributes into the saved vector layer.
 
         Every feature gets ``source`` (the source raster's file name) and
@@ -1914,13 +2219,16 @@ class SamGeoPlugin:
         Args:
             output_path: Path of the vector file written by raster_to_vector.
             scores: Optional mapping of raster value to confidence score.
+            source_path: Source raster path. Defaults to the current image.
         """
         layer = QgsVectorLayer(output_path, "samgeo_attributes", "ogr")
         if not layer.isValid():
             return
         provider = layer.dataProvider()
 
-        attrs = mask_attributes(self.current_image_path, self.last_prompt_type)
+        attrs = mask_attributes(
+            source_path or self.current_image_path, self.last_prompt_type
+        )
         new_fields = [
             QgsField(name, QVariant.String, "", 254)
             for name in (SOURCE_FIELD, PROMPT_FIELD)
