@@ -55,6 +55,7 @@ from .plugin_utils import (
     TILE_OVERLAP_DEFAULT,
     TILE_SIZE_DEFAULT,
     default_output_path,
+    failed_tile_messages,
     is_geotiff,
     mask_attributes,
     model_constructor_kwargs,
@@ -99,8 +100,13 @@ class SamGeoPlugin:
         self.sam = None
         self.current_layer = None
         self.current_image_path = None
-        # Prompt type of the current masks, written to the ``prompt`` field
+        # Prompt type and source image of the current masks, written to the
+        # ``prompt`` and ``source`` fields. Recorded only after a successful
+        # segmentation so a failed run or a new image does not relabel them.
         self.last_prompt_type = None
+        self.mask_source_path = None
+        # Set when tiled mode replaced the model's image with its last tile
+        self.image_needs_reset = False
 
         # Point and box prompts
         self.point_coords = []
@@ -1068,11 +1074,12 @@ class SamGeoPlugin:
 
         start_path = self.output_path_edit.text().strip()
         if not start_path:
+            source = self.mask_source_path or self.current_image_path
             start_path = default_output_path(
-                self.current_image_path,
+                source,
                 self.last_prompt_type,
                 output_extension(format_text),
-            ) or source_directory(self.current_image_path)
+            ) or source_directory(source)
 
         file_path, _ = QFileDialog.getSaveFileName(
             self.iface.mainWindow(), "Save Output", start_path, filter_str
@@ -1189,6 +1196,7 @@ class SamGeoPlugin:
             self.sam.set_image(source)
             self.current_layer = layer
             self.current_image_path = source
+            self.image_needs_reset = False
 
             self.image_status.setText(f"Image: {layer.name()}")
             self.image_status.setStyleSheet("color: green;")
@@ -1221,6 +1229,7 @@ class SamGeoPlugin:
 
             self.sam.set_image(file_path)
             self.current_image_path = file_path
+            self.image_needs_reset = False
             self.current_layer = None
 
             self.image_status.setText(f"Image: {os.path.basename(file_path)}")
@@ -1252,8 +1261,7 @@ class SamGeoPlugin:
             self.segment_by_text_tiled()
             return
 
-        if self.current_image_path is None:
-            self.show_error("Please set an image first.")
+        if not self._image_ready():
             return
 
         prompt = self.text_prompt_edit.text().strip()
@@ -1273,8 +1281,8 @@ class SamGeoPlugin:
                 self.max_size_spin.value() if self.max_size_spin.value() > 0 else None
             )
 
-            self.last_prompt_type = PROMPT_TEXT
             self.sam.generate_masks(prompt, min_size=min_size, max_size=max_size)
+            self._record_mask_result(PROMPT_TEXT)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
             self.results_text.setText(
@@ -1311,6 +1319,23 @@ class SamGeoPlugin:
 
         finally:
             self.progress_bar.setVisible(False)
+
+    def _image_ready(self):
+        """Check that an image is set on the model, showing an error if not.
+
+        Returns:
+            True if prompts can run against the current image.
+        """
+        if self.current_image_path is None:
+            self.show_error("Please set an image first.")
+            return False
+        if self.image_needs_reset:
+            self.show_error(
+                "Tiled mode replaced the model's image. Please set the image "
+                "again before using this prompt."
+            )
+            return False
+        return True
 
     def _tiled_source_path(self):
         """Return the raster path to use for tiled text segmentation.
@@ -1360,14 +1385,19 @@ class SamGeoPlugin:
         )
         # Raise GDAL errors as exceptions locally without changing the
         # process-wide setting that QGIS and other plugins rely on.
-        if hasattr(gdal, "ExceptionMgr"):
-            with gdal.ExceptionMgr(useExceptions=True):
+        try:
+            if hasattr(gdal, "ExceptionMgr"):
+                with gdal.ExceptionMgr(useExceptions=True):
+                    dataset = gdal.Translate(output, source, **options)
+            else:
                 dataset = gdal.Translate(output, source, **options)
-        else:
-            dataset = gdal.Translate(output, source, **options)
-        if dataset is None:
-            raise RuntimeError(f"Could not resample {source} to {scale}%.")
-        dataset = None  # Close and flush to disk.
+            if dataset is None:
+                raise RuntimeError(f"Could not resample {source} to {scale}%.")
+            dataset = None  # Close and flush to disk.
+        except Exception:
+            if os.path.exists(output):
+                os.remove(output)
+            raise
         return output
 
     def segment_by_text_tiled(self):
@@ -1426,7 +1456,6 @@ class SamGeoPlugin:
             self.text_status_label.setStyleSheet("color: orange;")
             QCoreApplication.processEvents()
 
-            self.last_prompt_type = PROMPT_TEXT
             work_source = source
             n_tiles = None
             source_layer = QgsRasterLayer(source, "samgeo_tiled_source")
@@ -1445,7 +1474,9 @@ class SamGeoPlugin:
                 self.text_status_label.setText(f"Processing {n_tiles} tile(s)...")
                 QCoreApplication.processEvents()
 
-            output_path, use_temp_file = self._resolve_output_path(format_text, source)
+            output_path, use_temp_file = self._resolve_output_path(
+                format_text, source, PROMPT_TEXT
+            )
             if is_raster:
                 raster_path = output_path
             else:
@@ -1455,17 +1486,30 @@ class SamGeoPlugin:
                 temp_files.append(raster_path)
 
             tiles_started = True
-            self.sam.generate_masks_tiled(
-                source=work_source,
-                prompt=prompt,
-                output=raster_path,
-                tile_size=tile_size,
-                overlap=overlap,
-                min_size=min_size,
-                max_size=max_size,
-                unique=unique,
-                verbose=False,
-            )
+            # generate_masks_tiled skips tiles that raise and only reports
+            # them in its verbose output, so capture that output (it also
+            # keeps tqdm off QGIS's stderr) and look for failed tiles.
+            import contextlib
+            import io
+
+            log = io.StringIO()
+            with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+                self.sam.generate_masks_tiled(
+                    source=work_source,
+                    prompt=prompt,
+                    output=raster_path,
+                    tile_size=tile_size,
+                    overlap=overlap,
+                    min_size=min_size,
+                    max_size=max_size,
+                    unique=unique,
+                    verbose=True,
+                )
+            failures = failed_tile_messages(log.getvalue())
+            for message in failures:
+                self.log_message(message, level=Qgis.MessageLevel.Warning)
+            self.last_prompt_type = PROMPT_TEXT
+            self.mask_source_path = source
 
             if not is_raster:
                 try:
@@ -1508,6 +1552,10 @@ class SamGeoPlugin:
             ]
             if n_tiles is not None:
                 lines.append(f"Tiles: {n_tiles}")
+            if failures:
+                lines.append(
+                    f"Failed tiles: {len(failures)} (skipped; see the SamGeo log)"
+                )
             if not is_raster:
                 lines.append(f"Polygons: {found}")
             else:
@@ -1515,10 +1563,17 @@ class SamGeoPlugin:
             lines.append(f"Saved to: {output_path}")
             self.results_text.setText("\n".join(lines) + "\n")
 
-            self.text_status_label.setText(
-                f"Done. Saved to {os.path.basename(output_path)}"
-            )
-            self.text_status_label.setStyleSheet("color: green;")
+            if failures:
+                self.text_status_label.setText(
+                    f"Incomplete: {len(failures)} tile(s) failed. Saved to "
+                    f"{os.path.basename(output_path)}"
+                )
+                self.text_status_label.setStyleSheet("color: orange;")
+            else:
+                self.text_status_label.setText(
+                    f"Done. Saved to {os.path.basename(output_path)}"
+                )
+                self.text_status_label.setStyleSheet("color: green;")
             self.log_message(f"Tiled text segmentation saved to: {output_path}")
 
         except Exception as e:
@@ -1536,7 +1591,7 @@ class SamGeoPlugin:
             # generate_masks_tiled replaces the model's image with the last
             # tile, so point/box prompts need the image to be set again.
             if image_was_set and tiles_started:
-                self.current_image_path = None
+                self.image_needs_reset = True
                 self.image_status.setText(
                     "Image: set it again (tiled mode replaced it)"
                 )
@@ -1654,8 +1709,7 @@ class SamGeoPlugin:
             self.show_error("Please load the model first.")
             return
 
-        if self.current_image_path is None:
-            self.show_error("Please set an image first.")
+        if not self._image_ready():
             return
 
         if not self.point_coords:
@@ -1674,7 +1728,6 @@ class SamGeoPlugin:
             point_coords = np.array(self.point_coords)
             point_labels = np.array(self.point_labels)
 
-            self.last_prompt_type = PROMPT_POINT
             # Use appropriate method based on model type
             if hasattr(self.sam, "generate_masks_by_points"):
                 self.sam.generate_masks_by_points(
@@ -1687,6 +1740,7 @@ class SamGeoPlugin:
                     point_coords=point_coords,
                     point_labels=point_labels,
                 )
+            self._record_mask_result(PROMPT_POINT)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
             self.results_text.setText(
@@ -1773,8 +1827,7 @@ class SamGeoPlugin:
             self.show_error("Please load the model first.")
             return
 
-        if self.current_image_path is None:
-            self.show_error("Please set an image first.")
+        if not self._image_ready():
             return
 
         if self.box_coords is None:
@@ -1788,7 +1841,6 @@ class SamGeoPlugin:
             self.box_status_label.setStyleSheet("color: orange;")
             QCoreApplication.processEvents()
 
-            self.last_prompt_type = PROMPT_BOX
             # Use appropriate method based on model type
             if hasattr(self.sam, "generate_masks_by_boxes"):
                 self.sam.generate_masks_by_boxes(boxes=[self.box_coords])
@@ -1797,6 +1849,7 @@ class SamGeoPlugin:
                 import numpy as np
 
                 self.sam.predict(box=np.array(self.box_coords))
+            self._record_mask_result(PROMPT_BOX)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
             self.results_text.setText(
@@ -1928,8 +1981,7 @@ class SamGeoPlugin:
             self.show_error("Please load the model first.")
             return
 
-        if self.current_image_path is None:
-            self.show_error("Please set an image first.")
+        if not self._image_ready():
             return
 
         # Check if batch method is available
@@ -2019,7 +2071,6 @@ class SamGeoPlugin:
             unique = self.batch_unique_check.isChecked()
 
             # Run batch segmentation
-            self.last_prompt_type = PROMPT_BATCH_POINT
             self.sam.generate_masks_by_points_patch(
                 point_coords_batch=point_source,
                 point_crs=point_crs,
@@ -2028,6 +2079,7 @@ class SamGeoPlugin:
                 min_size=min_size,
                 max_size=max_size,
             )
+            self._record_mask_result(PROMPT_BATCH_POINT)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
 
@@ -2107,7 +2159,7 @@ class SamGeoPlugin:
             )
             self.show_error(f"Auto-show failed: {str(e)}")
 
-    def _resolve_output_path(self, format_text, source_path=None):
+    def _resolve_output_path(self, format_text, source_path=None, prompt_type=None):
         """Return the output path for the masks and whether it is temporary.
 
         Uses the Output tab path when set. Otherwise, if "Save next to source
@@ -2117,6 +2169,8 @@ class SamGeoPlugin:
         Args:
             format_text: Text of the output format combo.
             source_path: Source raster path. Defaults to the current image.
+            prompt_type: Prompt type for the suggested file name. Defaults
+                to the prompt type of the current masks.
 
         Returns:
             A ``(output_path, use_temp_file)`` tuple.
@@ -2130,11 +2184,11 @@ class SamGeoPlugin:
         extension = output_extension(format_text)
         if self.save_to_source_dir_check.isChecked():
             suggested = default_output_path(
-                source_path or self.current_image_path,
-                self.last_prompt_type,
+                source_path or self.mask_source_path or self.current_image_path,
+                prompt_type or self.last_prompt_type,
                 extension,
             )
-            if suggested and os.access(os.path.dirname(suggested), os.W_OK):
+            if suggested and self._dir_is_writable(os.path.dirname(suggested)):
                 return suggested, False
             self.log_message(
                 "Source image folder is unknown or not writable; "
@@ -2149,6 +2203,40 @@ class SamGeoPlugin:
         output_path = temp_file.name
         temp_file.close()
         return output_path, True
+
+    @staticmethod
+    def _dir_is_writable(directory):
+        """Return True if a file can actually be created in a directory.
+
+        ``os.access`` is unreliable for this on Windows, where it ignores
+        ACLs, so this creates and removes a temporary file instead.
+
+        Args:
+            directory: Directory to test.
+
+        Returns:
+            True if a file could be created there.
+        """
+        import tempfile
+
+        try:
+            with tempfile.TemporaryFile(dir=directory):
+                pass
+        except OSError:
+            return False
+        return True
+
+    def _record_mask_result(self, prompt_type):
+        """Remember how the current masks were made.
+
+        Called right after a segmentation call returns, so the ``prompt`` and
+        ``source`` fields describe the masks actually being saved.
+
+        Args:
+            prompt_type: Prompt type, e.g. ``"text"`` or ``"box"``.
+        """
+        self.last_prompt_type = prompt_type
+        self.mask_source_path = self.current_image_path
 
     def _write_masks(self):
         """Write the current masks using the Output tab settings.
@@ -2227,7 +2315,8 @@ class SamGeoPlugin:
         provider = layer.dataProvider()
 
         attrs = mask_attributes(
-            source_path or self.current_image_path, self.last_prompt_type
+            source_path or self.mask_source_path or self.current_image_path,
+            self.last_prompt_type,
         )
         new_fields = [
             QgsField(name, QVariant.String, "", 254)

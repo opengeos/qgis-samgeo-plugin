@@ -317,3 +317,26 @@ def scaled_size(width, height, scale):
     """
     factor = scale / 100.0
     return max(1, round(width * factor)), max(1, round(height * factor))
+
+
+def failed_tile_messages(log_text):
+    """Extract per-tile failure messages from ``generate_masks_tiled`` output.
+
+    ``SamGeo3.generate_masks_tiled`` catches errors per tile, prints
+    ``Warning: Failed to process tile (x, y): <error>`` and carries on, so
+    its captured output is the only record of skipped tiles.
+
+    Args:
+        log_text: Captured stdout of a ``generate_masks_tiled(verbose=True)``
+            call, or None.
+
+    Returns:
+        A list of failure messages, one per failed tile.
+    """
+    if not log_text:
+        return []
+    return [
+        line.strip().removeprefix("Warning: ")
+        for line in log_text.splitlines()
+        if "Failed to process tile" in line
+    ]

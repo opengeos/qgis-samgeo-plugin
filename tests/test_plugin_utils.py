@@ -177,3 +177,20 @@ def test_scaled_size():
     assert pu.scaled_size(1734, 1743, 50) == (867, 872)
     assert pu.scaled_size(1000, 10, 10) == (100, 1)
     assert pu.scaled_size(3, 3, 10) == (1, 1)
+
+
+def test_failed_tile_messages():
+    log = (
+        "Processing image: 2000 x 2000 pixels\n"
+        "Warning: Failed to process tile (1, 0): CUDA out of memory\n"
+        "Processing tiles: 100%|##########| 4/4\n"
+        "Warning: Failed to process tile (1, 1): boom\n"
+        "Saved mask to out.tif\n"
+    )
+    assert pu.failed_tile_messages(log) == [
+        "Failed to process tile (1, 0): CUDA out of memory",
+        "Failed to process tile (1, 1): boom",
+    ]
+    assert pu.failed_tile_messages("Saved mask to out.tif\n") == []
+    assert pu.failed_tile_messages("") == []
+    assert pu.failed_tile_messages(None) == []
