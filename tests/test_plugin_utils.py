@@ -130,3 +130,67 @@ def test_default_output_path_without_prompt_or_source(tmp_path):
         str(tmp_path), "scene_a_b_c_masks.tif"
     )
     assert pu.default_output_path(None, "text", ".tif") == ""
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("scene.tif", True),
+        (r"C:\data\My Scene.TIFF", True),
+        ("/data/scene.tif|layername=x", True),
+        ("scene.png", False),
+        ("scene.vrt", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_geotiff(path, expected):
+    assert pu.is_geotiff(path) is expected
+
+
+def test_validate_tile_settings():
+    assert pu.validate_tile_settings(1024, 128) is None
+    assert pu.validate_tile_settings(1024, 128, 50) is None
+    assert pu.validate_tile_settings(512, 512) is not None
+    assert pu.validate_tile_settings(256, 512) is not None
+    assert pu.validate_tile_settings(0, 0) is not None
+    assert pu.validate_tile_settings(512, -1) is not None
+    assert pu.validate_tile_settings(512, 64, 5) is not None
+    assert pu.validate_tile_settings(512, 64, 500) is not None
+
+
+@pytest.mark.parametrize(
+    "width, height, tile, overlap, expected",
+    [
+        (1000, 1000, 1024, 128, 1),
+        (1734, 1743, 1024, 128, 4),
+        (1734, 1743, 512, 64, 16),
+        (100, 5000, 1024, 0, 5),
+    ],
+)
+def test_tile_count(width, height, tile, overlap, expected):
+    assert pu.tile_count(width, height, tile, overlap) == expected
+
+
+def test_scaled_size():
+    assert pu.scaled_size(1734, 1743, 100) == (1734, 1743)
+    assert pu.scaled_size(1734, 1743, 50) == (867, 872)
+    assert pu.scaled_size(1000, 10, 10) == (100, 1)
+    assert pu.scaled_size(3, 3, 10) == (1, 1)
+
+
+def test_failed_tile_messages():
+    log = (
+        "Processing image: 2000 x 2000 pixels\n"
+        "Warning: Failed to process tile (1, 0): CUDA out of memory\n"
+        "Processing tiles: 100%|##########| 4/4\n"
+        "Warning: Failed to process tile (1, 1): boom\n"
+        "Saved mask to out.tif\n"
+    )
+    assert pu.failed_tile_messages(log) == [
+        "Failed to process tile (1, 0): CUDA out of memory",
+        "Failed to process tile (1, 1): boom",
+    ]
+    assert pu.failed_tile_messages("Saved mask to out.tif\n") == []
+    assert pu.failed_tile_messages("") == []
+    assert pu.failed_tile_messages(None) == []
