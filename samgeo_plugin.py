@@ -43,6 +43,21 @@ from qgis.core import (
 
 # Import the map tools
 from .map_tools import PointPromptTool, BoxPromptTool
+from .plugin_utils import (
+    PROMPT_BATCH_POINT,
+    PROMPT_BOX,
+    PROMPT_FIELD,
+    PROMPT_POINT,
+    PROMPT_TEXT,
+    SOURCE_FIELD,
+    default_output_path,
+    mask_attributes,
+    model_constructor_kwargs,
+    model_family,
+    model_weight_options,
+    output_extension,
+    source_directory,
+)
 
 TOOLBAR_OBJECT_NAME = "SamGeo"
 MENU_TITLE = "&SamGeo"
@@ -76,6 +91,11 @@ class SamGeoPlugin:
         self.sam = None
         self.current_layer = None
         self.current_image_path = None
+        # Prompt type and source image of the current masks, written to the
+        # ``prompt`` and ``source`` fields. Recorded only after a successful
+        # segmentation so a failed run or a new image does not relabel them.
+        self.last_prompt_type = None
+        self.mask_source_path = None
 
         # Point and box prompts
         self.point_coords = []
@@ -469,6 +489,19 @@ class SamGeoPlugin:
         version_row.addWidget(self.model_combo)
         backend_layout.addLayout(version_row)
 
+        # Model weights (follows the selected model family)
+        weights_row = QHBoxLayout()
+        weights_row.addWidget(QLabel("Weights:"))
+        self.weights_combo = QComboBox()
+        self.weights_combo.setToolTip(
+            "Model checkpoint size. Larger weights are more accurate but\n"
+            "slower and need more memory."
+        )
+        weights_row.addWidget(self.weights_combo)
+        backend_layout.addLayout(weights_row)
+        self.model_combo.currentTextChanged.connect(self._update_weight_options)
+        self._update_weight_options(self.model_combo.currentText())
+
         backend_row = QHBoxLayout()
         backend_row.addWidget(QLabel("Backend:"))
         self.backend_combo = QComboBox()
@@ -848,6 +881,18 @@ class SamGeoPlugin:
         )
         output_group_layout.addWidget(self.auto_show_check)
 
+        # Save next to the source image when no output path is given
+        self.save_to_source_dir_check = QCheckBox(
+            "Save next to source image when no path is set"
+        )
+        self.save_to_source_dir_check.setChecked(False)
+        self.save_to_source_dir_check.setToolTip(
+            "If the output path is empty, write the result to the source\n"
+            "image's folder as <image>_<prompt>_masks.<ext> instead of a\n"
+            "temporary file. Existing files are never overwritten."
+        )
+        output_group_layout.addWidget(self.save_to_source_dir_check)
+
         # Output path
         output_path_row = QHBoxLayout()
         self.output_path_edit = QLineEdit()
@@ -928,7 +973,10 @@ class SamGeoPlugin:
     def browse_batch_output(self):
         """Browse for batch output file location."""
         file_path, _ = QFileDialog.getSaveFileName(
-            self.iface.mainWindow(), "Save Batch Output", "", "GeoTIFF (*.tif)"
+            self.iface.mainWindow(),
+            "Save Batch Output",
+            default_output_path(self.current_image_path, PROMPT_BATCH_POINT, ".tif"),
+            "GeoTIFF (*.tif)",
         )
         if file_path:
             self.batch_output_edit.setText(file_path)
@@ -954,11 +1002,31 @@ class SamGeoPlugin:
         else:
             filter_str = "GeoTIFF (*.tif)"
 
+        start_path = self.output_path_edit.text().strip()
+        if not start_path:
+            source = self.mask_source_path or self.current_image_path
+            start_path = default_output_path(
+                source,
+                self.last_prompt_type,
+                output_extension(format_text),
+            ) or source_directory(source)
+
         file_path, _ = QFileDialog.getSaveFileName(
-            self.iface.mainWindow(), "Save Output", "", filter_str
+            self.iface.mainWindow(), "Save Output", start_path, filter_str
         )
         if file_path:
             self.output_path_edit.setText(file_path)
+
+    def _update_weight_options(self, model_text):
+        """Fill the weights combo with the choices of the selected family.
+
+        Args:
+            model_text: Text of the model combo, e.g. ``"SamGeo2 (SAM2)"``.
+        """
+        self.weights_combo.clear()
+        for label, value in model_weight_options(model_family(model_text)):
+            self.weights_combo.addItem(label, value)
+        self.weights_combo.setCurrentIndex(0)
 
     def load_model(self):
         """Load the SamGeo model."""
@@ -978,49 +1046,42 @@ class SamGeoPlugin:
             confidence = self.conf_spin.value()
             enable_interactive = self.interactive_check.isChecked()
 
+            family = model_family(model_version)
+            weight_kwargs = model_constructor_kwargs(
+                family, self.weights_combo.currentData()
+            )
+            weight_name = next(iter(weight_kwargs.values()))
+
+            try:
+                from ._samgeo_lib import get_samgeo
+            except ImportError:
+                from _samgeo_lib import get_samgeo
+
+            samgeo = get_samgeo()
+
             # Import and initialize the appropriate model
-            if "SamGeo3" in model_version:
-                try:
-                    from ._samgeo_lib import get_samgeo
-                except ImportError:
-                    from _samgeo_lib import get_samgeo
-
-                samgeo = get_samgeo()
-                SamGeo3 = samgeo.SamGeo3
-
-                self.sam = SamGeo3(
+            if family == "sam3":
+                self.sam = samgeo.SamGeo3(
                     backend=backend,
                     device=device,
                     confidence_threshold=confidence,
                     enable_inst_interactivity=enable_interactive,
+                    **weight_kwargs,
                 )
                 model_name = "SamGeo3"
-            elif "SamGeo2" in model_version:
-                try:
-                    from ._samgeo_lib import get_samgeo
-                except ImportError:
-                    from _samgeo_lib import get_samgeo
-
-                samgeo = get_samgeo()
-                SamGeo2 = samgeo.SamGeo2
-
-                self.sam = SamGeo2(
+            elif family == "sam2":
+                self.sam = samgeo.SamGeo2(
                     device=device,
+                    **weight_kwargs,
                 )
                 model_name = "SamGeo2"
             else:
-                try:
-                    from ._samgeo_lib import get_samgeo
-                except ImportError:
-                    from _samgeo_lib import get_samgeo
-
-                samgeo = get_samgeo()
-                SamGeo = samgeo.SamGeo
-
-                self.sam = SamGeo(
+                self.sam = samgeo.SamGeo(
                     device=device,
+                    **weight_kwargs,
                 )
                 model_name = "SamGeo"
+            model_name = f"{model_name} ({weight_name})"
 
             self.model_status.setText(f"Model: {model_name} loaded")
             self.model_status.setStyleSheet("color: green;")
@@ -1065,6 +1126,7 @@ class SamGeoPlugin:
             self.sam.set_image(source)
             self.current_layer = layer
             self.current_image_path = source
+            self._clear_mask_result()
 
             self.image_status.setText(f"Image: {layer.name()}")
             self.image_status.setStyleSheet("color: green;")
@@ -1097,6 +1159,7 @@ class SamGeoPlugin:
 
             self.sam.set_image(file_path)
             self.current_image_path = file_path
+            self._clear_mask_result()
             self.current_layer = None
 
             self.image_status.setText(f"Image: {os.path.basename(file_path)}")
@@ -1146,6 +1209,7 @@ class SamGeoPlugin:
             )
 
             self.sam.generate_masks(prompt, min_size=min_size, max_size=max_size)
+            self._record_mask_result(PROMPT_TEXT)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
             self.results_text.setText(
@@ -1326,6 +1390,7 @@ class SamGeoPlugin:
                     point_coords=point_coords,
                     point_labels=point_labels,
                 )
+            self._record_mask_result(PROMPT_POINT)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
             self.results_text.setText(
@@ -1435,6 +1500,7 @@ class SamGeoPlugin:
                 import numpy as np
 
                 self.sam.predict(box=np.array(self.box_coords))
+            self._record_mask_result(PROMPT_BOX)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
             self.results_text.setText(
@@ -1665,6 +1731,7 @@ class SamGeoPlugin:
                 min_size=min_size,
                 max_size=max_size,
             )
+            self._record_mask_result(PROMPT_BATCH_POINT)
 
             num_masks = len(self.sam.masks) if self.sam.masks else 0
 
@@ -1733,75 +1800,8 @@ class SamGeoPlugin:
         if self.sam is None or self.sam.masks is None or len(self.sam.masks) == 0:
             return
 
-        import tempfile
-
-        format_text = self.output_format_combo.currentText()
-        output_path = self.output_path_edit.text().strip()
-
-        # Generate temp file path if not specified
-        use_temp_file = False
-        if not output_path:
-            use_temp_file = True
-            if "Raster" in format_text:
-                temp_file = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
-                output_path = temp_file.name
-                temp_file.close()
-            elif "GeoPackage" in format_text:
-                temp_file = tempfile.NamedTemporaryFile(suffix=".gpkg", delete=False)
-                output_path = temp_file.name
-                temp_file.close()
-            else:  # Shapefile
-                temp_dir = tempfile.mkdtemp()
-                output_path = os.path.join(temp_dir, "masks.shp")
-
         try:
-            unique = self.unique_check.isChecked()
-
-            if "Raster" in format_text:
-                # Save as raster
-                self.sam.save_masks(output=output_path, unique=unique)
-
-                if self.add_to_map_check.isChecked():
-                    layer_name = (
-                        "samgeo_masks"
-                        if use_temp_file
-                        else os.path.basename(output_path)
-                    )
-                    layer = QgsRasterLayer(output_path, layer_name)
-                    if layer.isValid():
-                        QgsProject.instance().addMapLayer(layer)
-            else:
-                # Save as vector - first save as raster, then convert
-                temp_raster = tempfile.NamedTemporaryFile(
-                    suffix=".tif", delete=False
-                ).name
-                try:
-                    self.sam.save_masks(output=temp_raster, unique=unique)
-
-                    # Convert raster to vector
-                    try:
-                        from ._samgeo_lib import get_samgeo
-                    except ImportError:
-                        from _samgeo_lib import get_samgeo
-
-                    common = get_samgeo().common
-
-                    common.raster_to_vector(temp_raster, output_path)
-                    self._attach_mask_scores(output_path)
-
-                    if self.add_to_map_check.isChecked():
-                        layer_name = (
-                            "samgeo_masks"
-                            if use_temp_file
-                            else os.path.basename(output_path)
-                        )
-                        layer = QgsVectorLayer(output_path, layer_name, "ogr")
-                        if layer.isValid():
-                            QgsProject.instance().addMapLayer(layer)
-                finally:
-                    if os.path.exists(temp_raster):
-                        os.remove(temp_raster)
-
+            output_path = self._write_masks()
             self.results_text.append(f"\nAuto-saved to: {output_path}")
             self.log_message(f"Auto-saved masks to: {output_path}")
 
@@ -1811,41 +1811,204 @@ class SamGeoPlugin:
             )
             self.show_error(f"Auto-show failed: {str(e)}")
 
-    def _attach_mask_scores(self, output_path):
-        """Write each mask's confidence score into the saved vector layer.
+    def _resolve_output_path(self, format_text):
+        """Return the output path for the masks and whether it is temporary.
+
+        Uses the Output tab path when set. Otherwise, if "Save next to source
+        image" is checked and the source folder is writable, suggests a new
+        file there; else falls back to a temporary file.
+
+        Args:
+            format_text: Text of the output format combo.
+
+        Returns:
+            A ``(output_path, use_temp_file)`` tuple.
+        """
+        import tempfile
+
+        output_path = self.output_path_edit.text().strip()
+        if output_path:
+            return output_path, False
+
+        extension = output_extension(format_text)
+        if self.save_to_source_dir_check.isChecked():
+            suggested = default_output_path(
+                self.mask_source_path or self.current_image_path,
+                self.last_prompt_type,
+                extension,
+            )
+            if suggested and self._dir_is_writable(os.path.dirname(suggested)):
+                return suggested, False
+            self.log_message(
+                "Source image folder is unknown or not writable; "
+                "saving to a temporary file instead.",
+                level=Qgis.MessageLevel.Warning,
+            )
+
+        if extension == ".shp":
+            temp_dir = tempfile.mkdtemp()
+            return os.path.join(temp_dir, "masks.shp"), True
+        temp_file = tempfile.NamedTemporaryFile(suffix=extension, delete=False)
+        output_path = temp_file.name
+        temp_file.close()
+        return output_path, True
+
+    @staticmethod
+    def _dir_is_writable(directory):
+        """Return True if a file can actually be created in a directory.
+
+        ``os.access`` is unreliable for this on Windows, where it ignores
+        ACLs, so this creates and removes a temporary file instead.
+
+        Args:
+            directory: Directory to test.
+
+        Returns:
+            True if a file could be created there.
+        """
+        import tempfile
+
+        try:
+            with tempfile.TemporaryFile(dir=directory):
+                pass
+        except OSError:
+            return False
+        return True
+
+    def _record_mask_result(self, prompt_type):
+        """Remember how the current masks were made.
+
+        Called right after a segmentation call returns, so the ``prompt`` and
+        ``source`` fields describe the masks actually being saved.
+
+        Args:
+            prompt_type: Prompt type, e.g. ``"text"`` or ``"box"``.
+        """
+        self.last_prompt_type = prompt_type
+        self.mask_source_path = self.current_image_path
+
+    def _clear_mask_result(self):
+        """Drop masks left over from the previous image.
+
+        ``set_image`` does not clear the model's masks, but it does change
+        the georeference that ``save_masks`` writes them with, so saving them
+        after a new image is set would misplace and mislabel them.
+        """
+        if self.sam is not None and hasattr(self.sam, "masks"):
+            self.sam.masks = None
+        self.last_prompt_type = None
+        self.mask_source_path = None
+
+    def _write_masks(self):
+        """Write the current masks using the Output tab settings.
+
+        Rasters are written directly. Vectors are written as a temporary
+        raster first and then polygonized, after which the ``source``,
+        ``prompt`` and ``score`` attributes are added.
+
+        Returns:
+            The path of the written file.
+        """
+        import tempfile
+
+        format_text = self.output_format_combo.currentText()
+        output_path, use_temp_file = self._resolve_output_path(format_text)
+        unique = self.unique_check.isChecked()
+        layer_name = "samgeo_masks" if use_temp_file else os.path.basename(output_path)
+
+        if "Raster" in format_text:
+            self.sam.save_masks(output=output_path, unique=unique)
+
+            if self.add_to_map_check.isChecked():
+                layer = QgsRasterLayer(output_path, layer_name)
+                if layer.isValid():
+                    QgsProject.instance().addMapLayer(layer)
+            return output_path
+
+        # Save as vector - first save as raster, then convert
+        temp_file = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+        temp_raster = temp_file.name
+        temp_file.close()
+        try:
+            self.sam.save_masks(output=temp_raster, unique=unique)
+
+            try:
+                from ._samgeo_lib import get_samgeo
+            except ImportError:
+                from _samgeo_lib import get_samgeo
+
+            common = get_samgeo().common
+
+            common.raster_to_vector(temp_raster, output_path)
+            self._attach_mask_attributes(
+                output_path, getattr(self.sam, "mask_scores", None)
+            )
+
+            if self.add_to_map_check.isChecked():
+                layer = QgsVectorLayer(output_path, layer_name, "ogr")
+                if layer.isValid():
+                    QgsProject.instance().addMapLayer(layer)
+        finally:
+            if os.path.exists(temp_raster):
+                os.remove(temp_raster)
+        return output_path
+
+    def _attach_mask_attributes(self, output_path, scores=None):
+        """Write per-mask attributes into the saved vector layer.
+
+        Every feature gets ``source`` (the source raster's file name) and
+        ``prompt`` (the prompt type, e.g. ``text``, ``point`` or ``box``).
 
         ``save_masks`` records ``mask_scores`` (raster value -> confidence) on
         the model (segment-geospatial >= 1.4.2), and ``raster_to_vector``
         keeps the raster value in a ``value`` field, so the two are joined
-        here as a ``score`` attribute. Older segment-geospatial versions have
-        no ``mask_scores`` and the layer is left unchanged.
+        here as a ``score`` attribute. Without scores (older
+        segment-geospatial versions) no ``score`` field is added.
 
         Args:
             output_path: Path of the vector file written by raster_to_vector.
+            scores: Optional mapping of raster value to confidence score.
         """
-        scores = getattr(self.sam, "mask_scores", None)
-        if not scores:
-            return
-        layer = QgsVectorLayer(output_path, "samgeo_scores", "ogr")
+        layer = QgsVectorLayer(output_path, "samgeo_attributes", "ogr")
         if not layer.isValid():
             return
-        value_idx = layer.fields().indexOf("value")
-        if value_idx < 0:
-            return
         provider = layer.dataProvider()
-        if layer.fields().indexOf("score") < 0:
-            if not provider.addAttributes([QgsField("score", QVariant.Double)]):
+
+        attrs = mask_attributes(
+            self.mask_source_path or self.current_image_path, self.last_prompt_type
+        )
+        new_fields = [
+            QgsField(name, QVariant.String, "", 254)
+            for name in (SOURCE_FIELD, PROMPT_FIELD)
+            if layer.fields().indexOf(name) < 0
+        ]
+        value_idx = layer.fields().indexOf("value")
+        if scores and value_idx >= 0 and layer.fields().indexOf("score") < 0:
+            new_fields.append(QgsField("score", QVariant.Double))
+        if new_fields:
+            if not provider.addAttributes(new_fields):
+                self.log_message(
+                    f"Could not add attribute fields to {output_path}",
+                    level=Qgis.MessageLevel.Warning,
+                )
                 return
             layer.updateFields()
-        score_idx = layer.fields().indexOf("score")
+
+        fields = layer.fields()
+        fixed = {fields.indexOf(name): value for name, value in attrs.items()}
+        score_idx = fields.indexOf("score") if scores and value_idx >= 0 else -1
+
         changes = {}
         for feature in layer.getFeatures():
-            try:
-                key = int(feature[value_idx])
-            except (TypeError, ValueError):
-                continue
-            if key in scores:
-                changes[feature.id()] = {score_idx: float(scores[key])}
+            values = dict(fixed)
+            if score_idx >= 0:
+                try:
+                    key = int(feature[value_idx])
+                except (TypeError, ValueError):
+                    key = None
+                if key in scores:
+                    values[score_idx] = float(scores[key])
+            changes[feature.id()] = values
         if changes:
             provider.changeAttributeValues(changes)
 
@@ -1855,78 +2018,12 @@ class SamGeoPlugin:
             self.show_error("No masks to save. Please run segmentation first.")
             return
 
-        import tempfile
-
-        output_path = self.output_path_edit.text().strip()
-        format_text = self.output_format_combo.currentText()
-
-        # Generate temp file path if not specified
-        use_temp_file = False
-        if not output_path:
-            use_temp_file = True
-            if "Raster" in format_text:
-                temp_file = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
-                output_path = temp_file.name
-                temp_file.close()
-            elif "GeoPackage" in format_text:
-                temp_file = tempfile.NamedTemporaryFile(suffix=".gpkg", delete=False)
-                output_path = temp_file.name
-                temp_file.close()
-            else:  # Shapefile
-                temp_dir = tempfile.mkdtemp()
-                output_path = os.path.join(temp_dir, "masks.shp")
-
         try:
             self.progress_bar.setVisible(True)
             self.progress_bar.setRange(0, 0)
             QCoreApplication.processEvents()
 
-            unique = self.unique_check.isChecked()
-
-            if "Raster" in format_text:
-                # Save as raster
-                self.sam.save_masks(output=output_path, unique=unique)
-
-                if self.add_to_map_check.isChecked():
-                    layer_name = (
-                        "samgeo_masks"
-                        if use_temp_file
-                        else os.path.basename(output_path)
-                    )
-                    layer = QgsRasterLayer(output_path, layer_name)
-                    if layer.isValid():
-                        QgsProject.instance().addMapLayer(layer)
-            else:
-                # Save as vector - first save as raster, then convert
-                temp_raster = tempfile.NamedTemporaryFile(
-                    suffix=".tif", delete=False
-                ).name
-                try:
-                    self.sam.save_masks(output=temp_raster, unique=unique)
-
-                    # Convert raster to vector
-                    try:
-                        from ._samgeo_lib import get_samgeo
-                    except ImportError:
-                        from _samgeo_lib import get_samgeo
-
-                    common = get_samgeo().common
-
-                    common.raster_to_vector(temp_raster, output_path)
-                    self._attach_mask_scores(output_path)
-
-                    if self.add_to_map_check.isChecked():
-                        layer_name = (
-                            "samgeo_masks"
-                            if use_temp_file
-                            else os.path.basename(output_path)
-                        )
-                        layer = QgsVectorLayer(output_path, layer_name, "ogr")
-                        if layer.isValid():
-                            QgsProject.instance().addMapLayer(layer)
-                finally:
-                    if os.path.exists(temp_raster):
-                        os.remove(temp_raster)
+            output_path = self._write_masks()
             self.results_text.append(f"\nSaved to: {output_path}")
             self.log_message(f"Masks saved to: {output_path}")
 

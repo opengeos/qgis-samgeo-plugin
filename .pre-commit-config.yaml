@@ -35,5 +35,5 @@ repos:
       rev: 1.9.4
       hooks:
           - id: bandit
-            args: ["-r", ".", "-x", "tests"]
+            args: ["-r", ".", "-x", "./tests"]
             pass_filenames: false
