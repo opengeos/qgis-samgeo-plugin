@@ -100,6 +100,7 @@ class SamGeoPlugin:
         # SamGeo model instance
         self.sam = None
         self.current_layer = None
+        self._inv_gt_cache = None
         self.current_image_path = None
         # Prompt type and source image of the current masks, written to the
         # ``prompt`` and ``source`` fields. Recorded only after a successful
@@ -1196,6 +1197,7 @@ class SamGeoPlugin:
 
             self.sam.set_image(source)
             self.current_layer = layer
+            self._inv_gt_cache = None
             self.current_image_path = source
             self.image_needs_reset = False
             self._clear_mask_result()
@@ -1234,6 +1236,7 @@ class SamGeoPlugin:
             self.image_needs_reset = False
             self._clear_mask_result()
             self.current_layer = None
+            self._inv_gt_cache = None
 
             self.image_status.setText(f"Image: {os.path.basename(file_path)}")
             self.image_status.setStyleSheet("color: green;")
@@ -1244,6 +1247,7 @@ class SamGeoPlugin:
             if layer.isValid():
                 QgsProject.instance().addMapLayer(layer)
                 self.current_layer = layer
+                self._inv_gt_cache = None
                 self.refresh_layers()
 
         except Exception as e:
@@ -2482,6 +2486,7 @@ class SamGeoPlugin:
                 # Also clear internal state for image and layer
                 self.current_image_path = None
                 self.current_layer = None
+                self._inv_gt_cache = None
 
             except Exception:  # nosec B110
                 pass
