@@ -816,7 +816,9 @@ def _configure_duplicate_openmp_runtime() -> None:
 
     On macOS the variables are set only when another runtime is already
     loaded. On Windows the runtimes load after this runs, so they are set
-    when an OpenMP DLL is on QGIS's DLL path. Each variable is set only when
+    when an OpenMP DLL is on QGIS's DLL path, which in practice is every
+    Windows install (the VC++ runtime puts libomp140.x86_64.dll in
+    System32). Each variable is set only when
     the user has not set it. LLVM and Intel document two OpenMP runtimes in
     one process as unsupported; the alternative here is QGIS crashing.
     """
@@ -835,10 +837,9 @@ def _configure_duplicate_openmp_runtime() -> None:
             changed.append(f"{name}={value}")
     if changed:
         _log(
-            "QGIS has its own OpenMP runtime ({}); set {} so PyTorch "
-            "can run inside QGIS instead of crashing it".format(
-                ", ".join(found), " and ".join(changed)
-            ),
+            "Found OpenMP runtimes that can load next to PyTorch's own "
+            "({}); set {} so PyTorch can run inside QGIS instead of "
+            "crashing it".format(", ".join(found), " and ".join(changed)),
             Qgis.MessageLevel.Warning,
         )
 
