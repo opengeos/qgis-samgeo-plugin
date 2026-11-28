@@ -3,6 +3,7 @@ SamGeo QGIS Plugin - Main Plugin Class
 """
 
 import os
+import sys
 
 from qgis.PyQt.QtCore import Qt, QCoreApplication, QVariant
 from qgis.PyQt.QtGui import QIcon
@@ -2455,15 +2456,10 @@ class SamGeoPlugin:
 
         cleared_items = []
 
-        # Import torch early to use for cleanup
-        torch = None
-        try:
-            import torch as _torch
-
-            torch = _torch
-        except ImportError:
-            # PyTorch is optional; continue without GPU memory clearing if not installed.
-            pass
+        # Use torch only if a model already imported it. Importing it here
+        # could load its OpenMP runtime before the venv setup has run, and
+        # there is no GPU memory to clear when torch was never loaded.
+        torch = sys.modules.get("torch")
 
         # Clear SamGeo model if loaded
         if self.sam is not None:
