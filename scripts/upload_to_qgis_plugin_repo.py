@@ -18,7 +18,12 @@ import argparse
 import os
 import sys
 from urllib.parse import quote
-from xmlrpc.client import Binary, Fault, ProtocolError, ServerProxy
+from xmlrpc.client import (
+    Binary,
+    Fault,
+    ProtocolError,
+    ServerProxy,
+)  # nosec B411 - only talks to plugins.qgis.org
 
 REPO_URL_TEMPLATE = "https://{user}:{password}@plugins.qgis.org/plugins/RPC2/"
 

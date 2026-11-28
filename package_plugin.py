@@ -40,6 +40,7 @@ EXCLUDE_DIRS = {
     "node_modules",
     "scripts",
     "help",
+    "tests",
 }
 
 
