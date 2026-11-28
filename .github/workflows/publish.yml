@@ -24,6 +24,8 @@ jobs:
             ZIP_PATH: dist/samgeo_plugin.zip
         steps:
             - uses: actions/checkout@v6
+              with:
+                  ref: ${{ github.event.release.tag_name || inputs.tag }}
 
             - uses: actions/setup-python@v6
               with:
