@@ -1,0 +1,231 @@
+"""Unit tests for the QGIS-free helpers in ``plugin_utils``."""
+
+import os
+
+import pytest
+
+from samgeo_plugin import plugin_utils as pu
+
+
+@pytest.mark.parametrize(
+    "label, family",
+    [
+        ("SamGeo3 (SAM3)", "sam3"),
+        ("SamGeo2 (SAM2)", "sam2"),
+        ("SamGeo (SAM1)", "sam1"),
+        ("something else", "sam1"),
+    ],
+)
+def test_model_family(label, family):
+    assert pu.model_family(label) == family
+
+
+def test_weight_options_match_samgeo_values():
+    sam1 = [value for _, value in pu.model_weight_options("sam1")]
+    sam2 = [value for _, value in pu.model_weight_options("sam2")]
+    sam3 = [value for _, value in pu.model_weight_options("sam3")]
+    assert sorted(sam1) == ["vit_b", "vit_h", "vit_l"]
+    assert sorted(sam2) == [
+        "sam2-hiera-base-plus",
+        "sam2-hiera-large",
+        "sam2-hiera-small",
+        "sam2-hiera-tiny",
+    ]
+    assert sam3 == ["facebook/sam3", "facebook/sam3.1"]
+    assert pu.model_weight_options("nope") == []
+
+
+def test_defaults_keep_samgeo_defaults():
+    assert pu.default_model_weight("sam1") == "vit_h"
+    assert pu.default_model_weight("sam2") == "sam2-hiera-large"
+    assert pu.default_model_weight("sam3") == "facebook/sam3"
+    assert pu.default_model_weight("nope") is None
+
+
+def test_model_constructor_kwargs():
+    assert pu.model_constructor_kwargs("sam1", "vit_b") == {"model_type": "vit_b"}
+    assert pu.model_constructor_kwargs("sam2", "sam2-hiera-tiny") == {
+        "model_id": "sam2-hiera-tiny"
+    }
+    assert pu.model_constructor_kwargs("sam3", None) == {"model_id": "facebook/sam3"}
+    assert pu.model_constructor_kwargs("sam1", "") == {"model_type": "vit_h"}
+    with pytest.raises(ValueError):
+        pu.model_constructor_kwargs("sam1", "sam2-hiera-tiny")
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("/data/images/scene.tif", "scene.tif"),
+        (r"C:\Users\me\My Images\scene 1.tif", "scene 1.tif"),
+        ("C:/mixed\\path/scene.tif", "scene.tif"),
+        ("/data/image.gpkg|layername=rgb", "image.gpkg"),
+        ("scene.tif", "scene.tif"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_source_name(source, expected):
+    assert pu.source_name(source) == expected
+
+
+def test_mask_attributes():
+    assert pu.mask_attributes("/x/My Scene.tif", "box") == {
+        "source": "My Scene.tif",
+        "prompt": "box",
+    }
+    assert pu.mask_attributes(None, None) == {"source": "", "prompt": ""}
+
+
+@pytest.mark.parametrize(
+    "text, ext",
+    [
+        ("Raster (GeoTIFF)", ".tif"),
+        ("Vector (GeoPackage)", ".gpkg"),
+        ("Vector (Shapefile)", ".shp"),
+        ("unknown", ".tif"),
+    ],
+)
+def test_output_extension(text, ext):
+    assert pu.output_extension(text) == ext
+
+
+def test_source_directory(tmp_path):
+    image = tmp_path / "dir with space" / "scene.tif"
+    image.parent.mkdir()
+    image.write_bytes(b"")
+    assert pu.source_directory(str(image)) == str(image.parent)
+    assert pu.source_directory(str(tmp_path / "missing" / "scene.tif")) == ""
+    assert pu.source_directory("") == ""
+    assert pu.source_directory(None) == ""
+
+
+def test_default_output_path_next_to_source(tmp_path):
+    folder = tmp_path / "my images"
+    folder.mkdir()
+    image = folder / "wa building.tif"
+    image.write_bytes(b"")
+
+    path = pu.default_output_path(str(image), "text", ".gpkg")
+    assert path == os.path.join(str(folder), "wa building_text_masks.gpkg")
+
+    # Existing outputs are never overwritten.
+    open(path, "w").close()
+    second = pu.default_output_path(str(image), "text", ".gpkg")
+    assert second == os.path.join(str(folder), "wa building_text_masks_1.gpkg")
+    open(second, "w").close()
+    assert pu.default_output_path(str(image), "text", ".gpkg").endswith("_masks_2.gpkg")
+    assert pu.default_output_path(str(image), "text", ".gpkg", ensure_unique=False) == (
+        path
+    )
+
+
+def test_default_output_path_without_prompt_or_source(tmp_path):
+    image = tmp_path / "scene.tif"
+    image.write_bytes(b"")
+    assert pu.default_output_path(str(image), None, ".shp") == os.path.join(
+        str(tmp_path), "scene_masks.shp"
+    )
+    assert pu.default_output_path(str(image), "a/b c", ".tif") == os.path.join(
+        str(tmp_path), "scene_a_b_c_masks.tif"
+    )
+    assert pu.default_output_path(None, "text", ".tif") == ""
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("scene.tif", True),
+        (r"C:\data\My Scene.TIFF", True),
+        ("/data/scene.tif|layername=x", True),
+        ("scene.png", False),
+        ("scene.vrt", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_geotiff(path, expected):
+    assert pu.is_geotiff(path) is expected
+
+
+def test_validate_tile_settings():
+    assert pu.validate_tile_settings(1024, 128) is None
+    assert pu.validate_tile_settings(1024, 128, 50) is None
+    assert pu.validate_tile_settings(512, 512) is not None
+    assert pu.validate_tile_settings(256, 512) is not None
+    assert pu.validate_tile_settings(0, 0) is not None
+    assert pu.validate_tile_settings(512, -1) is not None
+    assert pu.validate_tile_settings(512, 64, 5) is not None
+    assert pu.validate_tile_settings(512, 64, 500) is not None
+
+
+@pytest.mark.parametrize(
+    "width, height, tile, overlap, expected",
+    [
+        (1000, 1000, 1024, 128, 1),
+        (1734, 1743, 1024, 128, 4),
+        (1734, 1743, 512, 64, 16),
+        (100, 5000, 1024, 0, 5),
+    ],
+)
+def test_tile_count(width, height, tile, overlap, expected):
+    assert pu.tile_count(width, height, tile, overlap) == expected
+
+
+def test_scaled_size():
+    assert pu.scaled_size(1734, 1743, 100) == (1734, 1743)
+    assert pu.scaled_size(1734, 1743, 50) == (867, 872)
+    assert pu.scaled_size(1000, 10, 10) == (100, 1)
+    assert pu.scaled_size(3, 3, 10) == (1, 1)
+
+
+def test_failed_tile_messages():
+    log = (
+        "Processing image: 2000 x 2000 pixels\n"
+        "Warning: Failed to process tile (1, 0): CUDA out of memory\n"
+        "Processing tiles: 100%|##########| 4/4\n"
+        "Warning: Failed to process tile (1, 1): boom\n"
+        "Saved mask to out.tif\n"
+    )
+    assert pu.failed_tile_messages(log) == [
+        "Failed to process tile (1, 0): CUDA out of memory",
+        "Failed to process tile (1, 1): boom",
+    ]
+    assert pu.failed_tile_messages("Saved mask to out.tif\n") == []
+    assert pu.failed_tile_messages("") == []
+    assert pu.failed_tile_messages(None) == []
+
+
+def test_strip_prefix_python38_compatible():
+    logs = "Warning: Failed to process tile 3: boom\nok\nFailed to process tile 4"
+    assert pu.failed_tile_messages(logs) == [
+        "Failed to process tile 3: boom",
+        "Failed to process tile 4",
+    ]
+
+
+def test_north_up_round_trip():
+    gt = pu.geotransform_from_extent(100.0, 50.0, 20.0, 10.0, 200, 100)
+    inv = pu.invert_geotransform(gt)
+    assert pu.map_to_pixel(inv, 100.0, 50.0) == pytest.approx([0, 0])
+    assert pu.map_to_pixel(inv, 110.0, 45.0) == pytest.approx([100, 50])
+    assert pu.rect_to_pixel_box(inv, 102.0, 41.0, 104.0, 49.0) == pytest.approx(
+        [20, 10, 40, 90]
+    )
+
+
+def test_rotated_geotransform():
+    # x = col + row, y = -row: the case extent scaling gets wrong
+    inv = pu.invert_geotransform((0.0, 1.0, 1.0, 0.0, 0.0, -1.0))
+    assert pu.map_to_pixel(inv, 60.0, -20.0) == pytest.approx([40, 20])
+    assert pu.map_to_pixel(inv, 60.0, -40.0) == pytest.approx([20, 40])
+
+
+def test_singular_geotransform_raises():
+    with pytest.raises(ValueError):
+        pu.invert_geotransform((0.0, 1.0, 2.0, 0.0, 2.0, 4.0))
+
+
+def test_layer_file_path_strips_provider_options():
+    assert pu.layer_file_path("/data/my image.tif|layername=a") == "/data/my image.tif"
+    assert pu.layer_file_path("C:\\data\\img.tif") == "C:\\data\\img.tif"
